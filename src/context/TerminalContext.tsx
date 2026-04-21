@@ -1,4 +1,6 @@
-import { createContext, useContext, useReducer, useCallback } from 'react';
+import { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import type { TerminalSession, CommandBlock } from '../types';
 
 // ── State & Actions ──────────────────────────────────────────────
@@ -15,7 +17,8 @@ type TerminalAction =
   | { type: 'APPEND_BLOCK'; sessionId: string; block: CommandBlock }
   | { type: 'UPDATE_BLOCK'; sessionId: string; blockId: string; partial: Partial<CommandBlock> }
   | { type: 'SET_INPUT_VALUE'; sessionId: string; value: string }
-  | { type: 'SET_SHOW_WELCOME'; sessionId: string; show: boolean };
+  | { type: 'SET_SHOW_WELCOME'; sessionId: string; show: boolean }
+  | { type: 'SET_GIT_STATUS'; sessionId: string; gitStatus: { branch: string; changes: number } };
 
 function createDefaultSession(id: string, path: string): TerminalSession {
   return {
@@ -46,7 +49,6 @@ function terminalReducer(state: TerminalState, action: TerminalAction): Terminal
       };
 
     case 'SET_ACTIVE_SESSION': {
-      // Deactivate all, activate target
       for (const [k, s] of next) {
         next.set(k, { ...s, isActive: k === action.id });
       }
@@ -89,6 +91,13 @@ function terminalReducer(state: TerminalState, action: TerminalAction): Terminal
       return { ...state, sessions: next };
     }
 
+    case 'SET_GIT_STATUS': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, { ...session, gitStatus: action.gitStatus });
+      return { ...state, sessions: next };
+    }
+
     default:
       return state;
   }
@@ -106,6 +115,7 @@ interface TerminalContextValue {
   updateBlock: (sessionId: string, blockId: string, partial: Partial<CommandBlock>) => void;
   setInputValue: (sessionId: string, value: string) => void;
   setShowWelcome: (sessionId: string, show: boolean) => void;
+  setGitStatus: (sessionId: string, gitStatus: { branch: string; changes: number }) => void;
   onExecute: (sessionId: string, command: string) => void;
 }
 
@@ -119,9 +129,65 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     activeSessionId: null,
   });
 
+  // Keep a stable ref to the latest dispatch for use in event listeners
+  const dispatchRef = useRef(dispatch);
+  const stateRef = useRef(state);
+  dispatchRef.current = dispatch;
+
+  // Sync stateRef so event listeners can read current state
+  useEffect(() => { stateRef.current = state; }, [state]);
+
+  // ── Listen for Rust-side command lifecycle events ─────────────
+  useEffect(() => {
+    const unlisteners: (() => void)[] = [];
+
+    async function setupListeners() {
+      // When Rust finishes a one-shot command, update the matching block
+      const unlistenFinish = await listen<{
+        blockId: string;
+        command: string;
+        output: string;
+        status: string;
+      }>('command-finish', (event) => {
+        const { blockId, output, status } = event.payload;
+        const currentState = stateRef.current;
+
+        // Find which session owns this block and update it
+        for (const [sid, sess] of currentState.sessions) {
+          if (sess.blocks.some(b => b.id === blockId)) {
+            dispatchRef.current({
+              type: 'UPDATE_BLOCK',
+              sessionId: sid,
+              blockId,
+              partial: {
+                output,
+                status: status === 'success' ? ('success' as const) : ('error' as const),
+              },
+            });
+            break;
+          }
+        }
+      });
+
+      unlisteners.push(unlistenFinish);
+    }
+
+    setupListeners();
+
+    return () => { unlisteners.forEach(fn => fn()); };
+  }, []);
+
   const createSession = useCallback((path: string) => {
     const id = crypto.randomUUID();
     dispatch({ type: 'CREATE_SESSION', id, path });
+
+    // Fetch real git status for this session's directory
+    invoke<{ branch: string; changes: number }>('get_git_status', { path })
+      .then((gs) => {
+        dispatch({ type: 'SET_GIT_STATUS', sessionId: id, gitStatus: gs });
+      })
+      .catch(() => {});
+
     return id;
   }, []);
 
@@ -149,9 +215,23 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_SHOW_WELCOME', sessionId, show });
   }, []);
 
-  const onExecute = useCallback((sessionId: string, command: string) => {
-    console.log(`[TerminalContext] onExecute: sessionId=${sessionId} command="${command}"`);
-    // Stub — will be replaced by Tauri invoke() when backend is ready
+  const setGitStatus = useCallback((sessionId: string, gitStatus: { branch: string; changes: number }) => {
+    dispatch({ type: 'SET_GIT_STATUS', sessionId, gitStatus });
+  }, []);
+
+  /**
+   * Execute a command.
+   * - For PTY sessions: TerminalPane writes directly to the PTY via write_to_pty.
+   *   This callback also fires a one-shot execute_command for block tracking.
+   * - Blocks are created as 'running' before this fires; they get updated
+   *   when Rust emits 'command-finish'.
+   */
+  const onExecute = useCallback((_sessionId: string, command: string) => {
+    // Fire the one-shot command for output capture + block status updates.
+    // The PTY (XTerm) handles interactive I/O separately.
+    invoke('execute_command', { command }).catch((err) => {
+      console.error('[TerminalContext] execute_command error:', err);
+    });
   }, []);
 
   const value: TerminalContextValue = {
@@ -164,6 +244,7 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     updateBlock,
     setInputValue,
     setShowWelcome,
+    setGitStatus,
     onExecute,
   };
 

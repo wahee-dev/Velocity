@@ -1,11 +1,57 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { FileNode } from '../types';
 
 /**
- * Stub handler for Tauri actions
- * Each function wraps invoke() for type safety and error handling
+ * Tauri IPC bridge — each function wraps invoke() for type safety and error handling.
+ * These are the real implementations replacing all former stubs.
  */
 
-// Execute a shell command
+// ── PTY / Terminal ────────────────────────────────────────────────
+
+/** Spawn a new PTY (interactive shell) for a terminal pane. Returns session info. */
+export async function handleSpawnPty(paneId: string): Promise<{ id: string; cwd: string }> {
+  try {
+    const result = await invoke<{ id: string; cwd: string }>('spawn_pty', { paneId });
+    return result;
+  } catch (error) {
+    console.error('[Tauri] spawn_pty failed:', error);
+    throw error;
+  }
+}
+
+/** Write input (keystrokes, commands) to a running PTY session. */
+export async function handleWriteToPty(sessionId: string, data: string): Promise<void> {
+  try {
+    await invoke('write_to_pty', { sessionId, data });
+  } catch (error) {
+    console.error('[Tauri] write_to_pty failed:', error);
+    throw error;
+  }
+}
+
+/** Resize a PTY session's terminal dimensions. */
+export async function handleResizePty(sessionId: string, cols: number, rows: number): Promise<void> {
+  try {
+    await invoke('resize_pty', { sessionId, cols, rows });
+  } catch (error) {
+    console.error('[Tauri] resize_pty failed:', error);
+    throw error;
+  }
+}
+
+/** Kill (terminate) a PTY session. */
+export async function handleKillPty(sessionId: string): Promise<void> {
+  try {
+    await invoke('kill_pty', { sessionId });
+  } catch (error) {
+    console.error('[Tauri] kill_pty failed:', error);
+    throw error;
+  }
+}
+
+// ── Command Execution ─────────────────────────────────────────────
+
+/** Execute a one-shot shell command (non-interactive). Returns stdout/stderr. */
 export async function handleExecuteCommand(command: string): Promise<string> {
   try {
     const result = await invoke<string>('execute_command', { command });
@@ -16,7 +62,7 @@ export async function handleExecuteCommand(command: string): Promise<string> {
   }
 }
 
-// Cancel a running command
+/** Cancel / kill a running command or PTY session. */
 export async function handleCancelCommand(blockId: string): Promise<void> {
   try {
     await invoke('cancel_command', { blockId });
@@ -26,7 +72,42 @@ export async function handleCancelCommand(blockId: string): Promise<void> {
   }
 }
 
-// Create a new workspace
+// ── File System ───────────────────────────────────────────────────
+
+/** Read directory contents as a sorted FileNode list. */
+export async function handleReadDir(path: string): Promise<FileNode[]> {
+  try {
+    const nodes = await invoke<FileNode[]>('read_dir', { path });
+    return nodes;
+  } catch (error) {
+    console.error('[Tauri] read_dir failed:', error);
+    throw error;
+  }
+}
+
+/** Get git status (branch + changed file count) for a directory. */
+export async function handleGetGitStatus(path?: string): Promise<{ branch: string; changes: number }> {
+  try {
+    const status = await invoke<{ branch: string; changes: number }>('get_git_status', { path });
+    return status;
+  } catch (error) {
+    console.error('[Tauri] get_git_status failed:', error);
+    throw error;
+  }
+}
+
+/** Open a file in the system's default application. */
+export async function handleOpenFile(path: string): Promise<void> {
+  try {
+    await invoke('open_file', { path });
+  } catch (error) {
+    console.error('[Tauri] open_file failed:', error);
+    throw error;
+  }
+}
+
+// ── Workspace & Folder Management ─────────────────────────────────
+
 export async function handleCreateWorkspace(name: string): Promise<string> {
   try {
     const workspaceId = await invoke<string>('create_workspace', { name });
@@ -37,7 +118,6 @@ export async function handleCreateWorkspace(name: string): Promise<string> {
   }
 }
 
-// Create a new folder in workspace
 export async function handleCreateFolder(workspaceId: string, name: string): Promise<string> {
   try {
     const folderId = await invoke<string>('create_folder', { workspaceId, name });
@@ -48,7 +128,6 @@ export async function handleCreateFolder(workspaceId: string, name: string): Pro
   }
 }
 
-// Delete a folder
 export async function handleDeleteFolder(folderId: string): Promise<void> {
   try {
     await invoke('delete_folder', { folderId });
@@ -58,7 +137,6 @@ export async function handleDeleteFolder(folderId: string): Promise<void> {
   }
 }
 
-// Rename a folder
 export async function handleRenameFolder(folderId: string, newName: string): Promise<void> {
   try {
     await invoke('rename_folder', { folderId, newName });
@@ -68,7 +146,8 @@ export async function handleRenameFolder(folderId: string, newName: string): Pro
   }
 }
 
-// Open a new tab
+// ── Tab Management ────────────────────────────────────────────────
+
 export async function handleOpenTab(workspaceId: string): Promise<string> {
   try {
     const tabId = await invoke<string>('open_tab', { workspaceId });
@@ -79,7 +158,6 @@ export async function handleOpenTab(workspaceId: string): Promise<string> {
   }
 }
 
-// Close a tab
 export async function handleCloseTab(tabId: string): Promise<void> {
   try {
     await invoke('close_tab', { tabId });
@@ -89,7 +167,6 @@ export async function handleCloseTab(tabId: string): Promise<void> {
   }
 }
 
-// Switch active tab
 export async function handleSwitchTab(tabId: string): Promise<void> {
   try {
     await invoke('switch_tab', { tabId });
@@ -99,7 +176,8 @@ export async function handleSwitchTab(tabId: string): Promise<void> {
   }
 }
 
-// AI Command - send prompt to AI
+// ── AI Features ───────────────────────────────────────────────────
+
 export async function handleAIPrompt(prompt: string): Promise<string> {
   try {
     const response = await invoke<string>('ai_prompt', { prompt });
@@ -110,7 +188,6 @@ export async function handleAIPrompt(prompt: string): Promise<string> {
   }
 }
 
-// AI Command - convert natural language to shell command
 export async function handleAIToCommand(naturalLanguage: string): Promise<string> {
   try {
     const command = await invoke<string>('ai_to_command', { naturalLanguage });
@@ -121,7 +198,8 @@ export async function handleAIToCommand(naturalLanguage: string): Promise<string
   }
 }
 
-// Copy text to clipboard
+// ── Clipboard & Utilities ─────────────────────────────────────────
+
 export async function handleCopyToClipboard(text: string): Promise<void> {
   try {
     await invoke('copy_to_clipboard', { text });
@@ -131,7 +209,6 @@ export async function handleCopyToClipboard(text: string): Promise<void> {
   }
 }
 
-// Clear terminal history
 export async function handleClearHistory(): Promise<void> {
   try {
     await invoke('clear_history');
@@ -141,7 +218,6 @@ export async function handleClearHistory(): Promise<void> {
   }
 }
 
-// Open settings
 export async function handleOpenSettings(): Promise<void> {
   try {
     await invoke('open_settings');
@@ -151,7 +227,6 @@ export async function handleOpenSettings(): Promise<void> {
   }
 }
 
-// Get system info
 export async function handleGetSystemInfo(): Promise<Record<string, string>> {
   try {
     const info = await invoke<Record<string, string>>('get_system_info');

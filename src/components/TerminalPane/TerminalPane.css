@@ -64,16 +64,17 @@
   position: relative;
 }
 
-/* XTerm.js mount container — hidden by default, ready for terminal overlay */
+/* XTerm.js mount container — live terminal overlay */
 .xterm-container {
   position: absolute;
   inset: 0;
   z-index: 1;
-  display: none;
+  overflow: hidden;
 }
 
-.xterm-container.active {
-  display: block;
+.xterm-container .xterm {
+  height: 100%;
+  padding: 8px 12px;
 }
 
 /* Welcome Section */

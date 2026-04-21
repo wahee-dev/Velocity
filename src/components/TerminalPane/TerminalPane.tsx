@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   MoreVertical,
@@ -7,7 +7,12 @@ import {
   Folder,
   Check
 } from 'lucide-react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 import { useTerminalContext } from '../../context/TerminalContext';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { CommandBlock } from '../../types';
 import './TerminalPane.css';
 
@@ -23,6 +28,12 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // XTerm state
+  const xtermRef = useRef<Terminal | null>(null);
+  const fitAddonRef = useRef<FitAddon | null>(null);
+  const ptySessionIdRef = useRef<string | null>(null);
+  const unlistenRef = useRef<(() => void)[]>([]);
+
   // Fallback if session not yet in context
   const blocks = session?.blocks ?? [];
   const inputValue = session?.inputValue ?? '';
@@ -30,11 +41,147 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
   const gitStatus = session?.gitStatus ?? { branch: 'main', changes: 0 };
   const isActive = session?.isActive ?? false;
 
+  // ── Spawn PTY & initialize XTerm on mount ──────────────────────
   useEffect(() => {
-    if (isActive && inputRef.current) {
+    async function initTerminal() {
+      if (!terminalRef.current) return;
+
+      // Spawn PTY session on the Rust side
+      const ptyInfo = await invoke<{ id: string; cwd: string }>('spawn_pty', {
+        paneId: sessionId,
+      });
+      ptySessionIdRef.current = ptyInfo.id;
+
+      // Create XTerm instance
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace",
+        theme: {
+          background: '#000000',
+          foreground: '#e4e4e4',
+          cursor: '#e4e4e4',
+          selectionBackground: '#264f78',
+          black: '#000000',
+          red: '#cd3131',
+          green: '#0dbc79',
+          yellow: '#e5e510',
+          blue: '#2472c8',
+          magenta: '#bc3fbc',
+          cyan: '#11a8cd',
+          white: '#e5e5e5',
+          brightBlack: '#666666',
+          brightRed: '#f14c4c',
+          brightGreen: '#23d18b',
+          brightYellow: '#f5f543',
+          brightBlue: '#3b8eea',
+          brightMagenta: '#d670d6',
+          brightCyan: '#29b8db',
+          brightWhite: '#ffffff',
+        },
+        allowProposedApi: true,
+      });
+
+      const fitAddon = new FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(terminalRef.current);
+
+      // Auto-fit to container
+      fitAddon.fit();
+
+      xtermRef.current = term;
+      fitAddonRef.current = fitAddon;
+
+      // Listen for PTY output from Rust
+      const unlistenOutput = await listen<{
+        sessionId: string;
+        paneId: string;
+        data: string;
+      }>('pty://output', (event) => {
+        if (event.payload.sessionId === ptySessionIdRef.current) {
+          term.write(event.payload.data);
+        }
+      });
+
+      // Listen for PTY close event
+      const unlistenClosed = await listen<{
+        sessionId: string;
+        paneId: string;
+      }>('pty://closed', (event) => {
+        if (event.payload.sessionId === ptySessionIdRef.current) {
+          term.write('\r\n\x1b[90m[Session terminated]\x1b[0m\r\n');
+        }
+      });
+
+      // Listen for CWD changes
+      const unlistenCwd = await listen<{
+        sessionId: string;
+        paneId: string;
+        cwd: string;
+      }>('cwd-changed', (event) => {
+        if (event.payload.sessionId === ptySessionIdRef.current) {
+          // Could update path display here
+        }
+      });
+
+      unlistenRef.current.push(unlistenOutput, unlistenClosed, unlistenCwd);
+
+      // Focus the terminal
+      term.focus();
+    }
+
+    initTerminal();
+
+    return () => {
+      // Cleanup listeners
+      unlistenRef.current.forEach(fn => fn());
+      unlistenRef.current = [];
+
+      // Dispose XTerm
+      if (xtermRef.current) {
+        xtermRef.current.dispose();
+        xtermRef.current = null;
+      }
+
+      // Kill PTY session
+      if (ptySessionIdRef.current) {
+        invoke('kill_pty', { sessionId: ptySessionIdRef.current }).catch(() => {});
+        ptySessionIdRef.current = null;
+      }
+    };
+  }, [sessionId]);
+
+  // ── Resize XTerm when container size changes ───────────────────
+  useEffect(() => {
+    function handleResize() {
+      if (fitAddonRef.current) {
+        try { fitAddonRef.current.fit(); } catch {}
+      }
+    }
+
+    const observer = new ResizeObserver(handleResize);
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+
+    return () => observer.disconnect();
+  }, []);
+
+  // ── Auto-focus active terminal ─────────────────────────────────
+  useEffect(() => {
+    if (isActive && xtermRef.current) {
+      xtermRef.current.focus();
+    } else if (isActive && inputRef.current) {
       inputRef.current.focus();
     }
   }, [isActive]);
+
+  // ── Send input to PTY ──────────────────────────────────────────
+  const sendToPty = useCallback((data: string) => {
+    if (ptySessionIdRef.current) {
+      invoke('write_to_pty', { sessionId: ptySessionIdRef.current, data });
+    }
+  }, []);
 
   function handleExecuteCommand() {
     if (!inputValue.trim()) return;
@@ -49,7 +196,9 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
     context.appendBlock(sessionId, newBlock);
     context.setInputValue(sessionId, '');
     context.setShowWelcome(sessionId, false);
-    context.onExecute(sessionId, inputValue);
+
+    // Send command to PTY (with newline to execute)
+    sendToPty(inputValue + '\r');
 
     // Scroll to bottom
     setTimeout(() => {
@@ -64,6 +213,9 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
   }
 
   async function handleClosePane() {
+    if (ptySessionIdRef.current) {
+      await invoke('kill_pty', { sessionId: ptySessionIdRef.current });
+    }
     context.removeSession(sessionId);
   }
 
@@ -90,9 +242,10 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
         ref={containerRef}
         data-terminal-id={sessionId}
       >
-        {/* XTerm.js mount point — hidden until activated */}
-        <div className="xterm-container" ref={terminalRef} />
+        {/* XTerm.js canvas — the live terminal */}
+        <div className="xterm-container active" ref={terminalRef} />
 
+        {/* Warp-style welcome overlay (shown until first command) */}
         <AnimatePresence>
           {showWelcome && (
             <motion.div
@@ -140,6 +293,7 @@ export function TerminalPane({ sessionId }: TerminalPaneProps) {
           )}
         </AnimatePresence>
 
+        {/* Warp-style command block history */}
         {blocks.map((block) => (
           <motion.div
             key={block.id}
