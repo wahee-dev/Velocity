@@ -1,32 +1,4 @@
-/* Terminal-Native Global Styles */
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
-
-:root {
-  /* Pure Terminal Colors */
-  --bg-void: #000000;
-  --bg-block: #000000;
-  --border-subtle: #1a1a1a;
-  
-  --text-primary: #e0e0e0;
-  --text-secondary: #808080;
-  --text-muted: #505050;
-  
-  --accent: #00d4aa;
-  --accent-dim: #009977;
-  
-  --success: #00ff88;
-  --error: #ff4444;
-  --warning: #ffaa00;
-  
-  /* Sidebar */
-  --sidebar-width: 48px;
-  --sidebar-expanded: 240px;
-  
-  /* Typography */
-  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
-  --line-height: 1.2;
-  --font-size: 13px;
-}
 
 * {
   margin: 0;
@@ -34,26 +6,52 @@
   box-sizing: border-box;
 }
 
+:root {
+  --bg-primary: #000000;
+  --bg-secondary: #0d0d0d;
+  --bg-sidebar: #141414;
+  --bg-sidebar-hover: #1f1f1f;
+  --bg-selected: #2a2a2a;
+  --bg-explorer: #1a1a1a;
+  --bg-input: #0a0a0a;
+  
+  --border-color: #2a2a2a;
+  --border-subtle: #1a1a1a;
+  
+  --text-primary: #e0e0e0;
+  --text-secondary: #808080;
+  --text-muted: #5a5a5a;
+  --text-placeholder: #4a4a4a;
+  
+  --accent-orange: #f97316;
+  --accent-purple: #a855f7;
+  --accent-green: #22c55e;
+  --accent-blue: #3b82f6;
+  
+  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
+}
+
 html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: var(--bg-void);
-}
-
-body {
-  font-family: var(--font-mono);
-  font-size: var(--font-size);
-  line-height: var(--line-height);
+  background: var(--bg-primary);
   color: var(--text-primary);
-  background-color: var(--bg-void);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.2;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Minimal Scrollbar */
+::selection {
+  background: var(--accent-orange);
+  color: var(--bg-primary);
+}
+
 ::-webkit-scrollbar {
-  width: 4px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -61,29 +59,29 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-subtle);
-  border-radius: 2px;
+  background: var(--border-color);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
 
-*:focus {
-  outline: none;
+input, textarea {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.2;
 }
 
-::selection {
-  background: var(--accent);
-  color: var(--bg-void);
+button {
+  font-family: var(--font-mono);
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
 }
 
-/* Blinking Cursor */
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
-}
-
-.cursor-blink {
-  animation: blink 1s step-end infinite;
 }
