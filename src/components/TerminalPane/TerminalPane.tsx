@@ -1,28 +1,34 @@
-import { useState, useRef, useEffect } from 'react';
+import { useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  MoreVertical, 
-  X, 
+import {
+  MoreVertical,
+  X,
   GitBranch,
   Folder,
   Check
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
-import type { CommandBlock, GitStatus } from '../../types';
+import { useTerminalContext } from '../../context/TerminalContext';
+import type { CommandBlock } from '../../types';
 import './TerminalPane.css';
 
 interface TerminalPaneProps {
-  path: string;
-  isActive?: boolean;
+  sessionId: string;
 }
 
-export function TerminalPane({ path, isActive = true }: TerminalPaneProps) {
-  const [blocks, setBlocks] = useState<CommandBlock[]>([]);
-  const [inputValue, setInputValue] = useState('');
-  const [showWelcome, setShowWelcome] = useState(true);
-  const [gitStatus] = useState<GitStatus>({ branch: 'main', changes: 0 });
+export function TerminalPane({ sessionId }: TerminalPaneProps) {
+  const context = useTerminalContext();
+  const session = context.state.sessions.get(sessionId);
+
   const inputRef = useRef<HTMLInputElement>(null);
+  const terminalRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Fallback if session not yet in context
+  const blocks = session?.blocks ?? [];
+  const inputValue = session?.inputValue ?? '';
+  const showWelcome = session?.showWelcome ?? true;
+  const gitStatus = session?.gitStatus ?? { branch: 'main', changes: 0 };
+  const isActive = session?.isActive ?? false;
 
   useEffect(() => {
     if (isActive && inputRef.current) {
@@ -30,7 +36,7 @@ export function TerminalPane({ path, isActive = true }: TerminalPaneProps) {
     }
   }, [isActive]);
 
-  async function handleExecuteCommand() {
+  function handleExecuteCommand() {
     if (!inputValue.trim()) return;
 
     const newBlock: CommandBlock = {
@@ -40,24 +46,10 @@ export function TerminalPane({ path, isActive = true }: TerminalPaneProps) {
       timestamp: new Date(),
     };
 
-    setBlocks(prev => [...prev, newBlock]);
-    setInputValue('');
-    setShowWelcome(false);
-
-    try {
-      const output = await invoke<string>('execute_command', { command: inputValue });
-      setBlocks(prev => prev.map(b => 
-        b.id === newBlock.id 
-          ? { ...b, status: 'success', output } 
-          : b
-      ));
-    } catch (error) {
-      setBlocks(prev => prev.map(b => 
-        b.id === newBlock.id 
-          ? { ...b, status: 'error', output: String(error) } 
-          : b
-      ));
-    }
+    context.appendBlock(sessionId, newBlock);
+    context.setInputValue(sessionId, '');
+    context.setShowWelcome(sessionId, false);
+    context.onExecute(sessionId, inputValue);
 
     // Scroll to bottom
     setTimeout(() => {
@@ -72,20 +64,16 @@ export function TerminalPane({ path, isActive = true }: TerminalPaneProps) {
   }
 
   async function handleClosePane() {
-    try {
-      await invoke('close_pane');
-    } catch (error) {
-      console.error('[Tauri] close_pane failed:', error);
-    }
+    context.removeSession(sessionId);
   }
 
-  const fullDisplayPath = `~\\_cuments\\Code\\Big Apps\\Velocity\\velocity`;
+  const fullDisplayPath = session?.path ?? '~\\Documents\\Code\\Big Apps\\Velocity\\velocity';
 
   return (
     <div className={`terminal-pane ${isActive ? 'active' : ''}`}>
       <div className="pane-header">
         <div className="pane-title">
-          <span className="pane-path">{path}</span>
+          <span className="pane-path">{fullDisplayPath}</span>
         </div>
         <div className="pane-actions">
           <button className="pane-btn">
@@ -97,10 +85,17 @@ export function TerminalPane({ path, isActive = true }: TerminalPaneProps) {
         </div>
       </div>
 
-      <div className="pane-content" ref={containerRef}>
+      <div
+        className="pane-content"
+        ref={containerRef}
+        data-terminal-id={sessionId}
+      >
+        {/* XTerm.js mount point — hidden until activated */}
+        <div className="xterm-container" ref={terminalRef} />
+
         <AnimatePresence>
           {showWelcome && (
-            <motion.div 
+            <motion.div
               className="welcome-section"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -186,7 +181,7 @@ export function TerminalPane({ path, isActive = true }: TerminalPaneProps) {
             className="command-input"
             placeholder="Warp anything e.g. Create unit tests for my authentication service"
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
+            onChange={(e) => context.setInputValue(sessionId, e.target.value)}
             onKeyDown={handleKeyDown}
           />
           <div className="input-hint">

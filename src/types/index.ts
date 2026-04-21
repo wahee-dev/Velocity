@@ -32,3 +32,13 @@ export interface GitStatus {
   branch: string;
   changes: number;
 }
+
+export interface TerminalSession {
+  id: string;
+  path: string;
+  blocks: CommandBlock[];
+  inputValue: string;
+  showWelcome: boolean;
+  isActive: boolean;
+  gitStatus: GitStatus;
+}

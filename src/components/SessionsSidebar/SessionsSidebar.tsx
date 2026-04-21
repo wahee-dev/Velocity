@@ -1,15 +1,15 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  PanelLeft, 
-  Scissors, 
-  LayoutGrid, 
-  Search, 
+import {
+  PanelLeft,
+  Scissors,
+  LayoutGrid,
+  Search,
   ArrowLeftRight,
   Plus,
   Flame
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { useTerminalContext } from '../../context/TerminalContext';
 import type { Session } from '../../types';
 import './SessionsSidebar.css';
 
@@ -25,26 +25,20 @@ interface SessionsSidebarProps {
 }
 
 export function SessionsSidebar({ onSelectSession }: SessionsSidebarProps) {
+  const context = useTerminalContext();
   const [sessions] = useState<Session[]>(mockSessions);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>('4');
 
-  async function handleNewSession() {
-    try {
-      await invoke('create_session');
-    } catch (error) {
-      console.error('[Tauri] create_session failed:', error);
-    }
+  function handleNewSession() {
+    // Stub — will be wired to Tauri backend later
+    console.log('[SessionsSidebar] create_session (stub)');
   }
 
-  async function handleSelectSession(session: Session) {
+  function handleSelectSession(session: Session) {
     setSelectedId(session.id);
     onSelectSession(session);
-    try {
-      await invoke('switch_session', { sessionId: session.id });
-    } catch (error) {
-      console.error('[Tauri] switch_session failed:', error);
-    }
+    context.setActiveSession(session.id);
   }
 
   const filteredSessions = sessions.filter(s => 

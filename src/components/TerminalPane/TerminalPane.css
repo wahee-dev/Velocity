@@ -57,9 +57,23 @@
 .pane-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+/* XTerm.js mount container — hidden by default, ready for terminal overlay */
+.xterm-container {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: none;
+}
+
+.xterm-container.active {
+  display: block;
 }
 
 /* Welcome Section */
