@@ -1,38 +1,31 @@
-/* Warp-Clone Global Styles */
+/* Terminal-Native Global Styles */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 :root {
-  /* Color Palette - Terminal Dark Theme */
-  --bg-primary: #0a0a0f;
-  --bg-secondary: #12121a;
-  --bg-tertiary: #1a1a24;
-  --bg-elevated: #222230;
+  /* Pure Terminal Colors */
+  --bg-void: #000000;
+  --bg-block: #000000;
+  --border-subtle: #1a1a1a;
   
-  --text-primary: #e4e4e7;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #808080;
+  --text-muted: #505050;
   
-  --accent-primary: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-glow: rgba(99, 102, 241, 0.3);
+  --accent: #00d4aa;
+  --accent-dim: #009977;
   
-  --border-color: #27272a;
-  --border-glow: rgba(99, 102, 241, 0.5);
+  --success: #00ff88;
+  --error: #ff4444;
+  --warning: #ffaa00;
   
-  --success: #22c55e;
-  --warning: #eab308;
-  --error: #ef4444;
-  
-  /* Glass Effect */
-  --glass-bg: rgba(18, 18, 26, 0.85);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-blur: 16px;
-  
-  /* Spacing */
-  --sidebar-width: 260px;
-  --command-bar-height: 56px;
+  /* Sidebar */
+  --sidebar-width: 48px;
+  --sidebar-expanded: 240px;
   
   /* Typography */
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
+  --line-height: 1.2;
+  --font-size: 13px;
 }
 
 * {
@@ -45,22 +38,22 @@ html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
+  background: var(--bg-void);
 }
 
 body {
-  font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.5;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
   color: var(--text-primary);
-  background-color: var(--bg-primary);
+  background-color: var(--bg-void);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom Scrollbar */
+/* Minimal Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -68,59 +61,29 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-color);
-  border-radius: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
 
-/* Focus States */
 *:focus {
   outline: none;
 }
 
-*:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
-}
-
-/* Selection */
 ::selection {
-  background: var(--accent-primary);
-  color: white;
+  background: var(--accent);
+  color: var(--bg-void);
 }
 
-/* Utility Classes */
-.truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Blinking Cursor */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
 }
 
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slideUp {
-  from { 
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to { 
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes pulse-glow {
-  0%, 100% {
-    box-shadow: 0 0 20px var(--accent-glow);
-  }
-  50% {
-    box-shadow: 0 0 30px var(--accent-glow), 0 0 40px var(--accent-glow);
-  }
+.cursor-blink {
+  animation: blink 1s step-end infinite;
 }
