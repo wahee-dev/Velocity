@@ -1,83 +1,69 @@
-import { useState } from 'react';
-import { Search, Plus, Minus, Square, X, Bell, User } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
-import './TitleBar.css';
+/* @solid */
+import { createSignal } from "solid-js";
+import { Search, Plus, Minus, Square, X, Bell, User } from "lucide-solid";
+import { invoke } from "@tauri-apps/api/core";
+import "./TitleBar.css";
 
 export function TitleBar() {
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = createSignal("");
 
-  async function handleSearch(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter' && searchQuery.trim()) {
+  async function handleSearch(e: KeyboardEvent) {
+    if (e.key === "Enter" && searchQuery().trim()) {
       try {
-        await invoke('search_sessions', { query: searchQuery });
+        await invoke("search_sessions", { query: searchQuery() });
       } catch (error) {
-        console.error('[Tauri] search_sessions failed:', error);
+        console.error("[Tauri] search_sessions failed:", error);
       }
     }
   }
 
-  async function handleMinimize() {
-    try {
-      await invoke('minimize_window');
-    } catch (error) {
-      console.error('[Tauri] minimize_window failed:', error);
-    }
-  }
-
-  async function handleMaximize() {
-    try {
-      await invoke('maximize_window');
-    } catch (error) {
-      console.error('[Tauri] maximize_window failed:', error);
-    }
-  }
-
-  async function handleClose() {
-    try {
-      await invoke('close_window');
-    } catch (error) {
-      console.error('[Tauri] close_window failed:', error);
-    }
-  }
-
   return (
-    <div className="title-bar" data-tauri-drag-region>
-      <div className="title-bar-left">
-        {/* Spacer for sidebar alignment */}
-      </div>
-      
-      <div className="title-bar-center">
-        <div className="search-container">
-          <Search size={14} className="search-icon" />
+    <div class="title-bar" data-tauri-drag-region>
+      <div class="title-bar-left" />
+      <div class="title-bar-center">
+        <div class="search-container">
+          <Search size={14} class="search-icon" />
           <input
             type="text"
-            className="search-input"
+            class="search-input"
             placeholder="Search sessions, agents, files..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={searchQuery()}
+            onInput={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
             onKeyDown={handleSearch}
           />
         </div>
       </div>
-      
-      <div className="title-bar-right">
-        <button className="title-btn">
+      <div class="title-bar-right">
+        <button class="title-btn">
           <Plus size={16} />
         </button>
-        <button className="title-btn">
+        <button class="title-btn">
           <Bell size={16} />
         </button>
-        <div className="user-avatar">
+        <div class="user-avatar">
           <User size={14} />
         </div>
-        <div className="window-controls">
-          <button className="window-btn" onClick={handleMinimize}>
+        <div class="window-controls">
+          <button
+            class="window-btn"
+            onClick={() =>
+              invoke("minimize_window").catch(console.error)
+            }
+          >
             <Minus size={14} />
           </button>
-          <button className="window-btn" onClick={handleMaximize}>
+          <button
+            class="window-btn"
+            onClick={() =>
+              invoke("maximize_window").catch(console.error)
+            }
+          >
             <Square size={12} />
           </button>
-          <button className="window-btn window-btn-close" onClick={handleClose}>
+          <button
+            class="window-btn window-btn-close"
+            onClick={() => invoke("close_window").catch(console.error)}
+          >
             <X size={14} />
           </button>
         </div>

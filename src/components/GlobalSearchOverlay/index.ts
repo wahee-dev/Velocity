@@ -1,0 +1,1 @@
+export { GlobalSearchOverlay } from './GlobalSearchOverlay';

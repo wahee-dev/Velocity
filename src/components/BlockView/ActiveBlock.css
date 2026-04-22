@@ -1,0 +1,46 @@
+.active-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(3, 7, 18, 0.92)),
+    rgba(2, 6, 23, 0.9);
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.28);
+}
+
+.active-block-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #93c5fd;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.active-block-terminal {
+  min-height: 220px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #050505;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.active-block-terminal .xterm {
+  padding: 10px 12px;
+}
+
+.active-block-terminal .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+.active-block-terminal .xterm-screen {
+  overflow-x: hidden !important;
+}
+
+.active-block-terminal canvas {
+  image-rendering: pixelated;
+}

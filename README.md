@@ -1,7 +1,13 @@
-# Tauri + React + Typescript
-
-This template should help get you started developing with Tauri, React and Typescript in Vite.
-
-## Recommended IDE Setup
-
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+  ┌─────────────────────┬────────────────────────────────────────────────────────┐      
+  │       Command       │                      What it does                      │      
+  ├─────────────────────┼────────────────────────────────────────────────────────┤      
+  │ bun run dev         │ Start Vite dev server (frontend only, no Tauri window) │      
+  ├─────────────────────┼────────────────────────────────────────────────────────┤
+  │ bun run build       │ Type-check + production build (outputs to dist/)       │      
+  ├─────────────────────┼────────────────────────────────────────────────────────┤      
+  │ bun run preview     │ Preview the production build locally                   │      
+  ├─────────────────────┼────────────────────────────────────────────────────────┤      
+  │ bun run tauri dev   │ Full app with hot-reload (Tauri + Vite)                │      
+  ├─────────────────────┼────────────────────────────────────────────────────────┤      
+  │ bun run tauri build │ Production build of the full desktop app               │      
+  └─────────────────────┴────────────────────────────────────────────────────────┘ 

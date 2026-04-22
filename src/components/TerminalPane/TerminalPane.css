@@ -1,52 +1,57 @@
+/* ── Pane root — must fill its slot in .terminal-area row ── */
 .terminal-pane {
-  flex: 1;
+  flex: 1 1 0%;
   display: flex;
   flex-direction: column;
   background: #000000;
-  min-width: 0;
+  min-width: 160px;
+  height: 100%;
+  overflow: hidden;
   border-right: 1px solid var(--border-subtle);
+  /* Critical: prevent flex children from overflowing */
+  position: relative;
 }
 
 .terminal-pane:last-child {
   border-right: none;
 }
 
+/* ── Header — minimal, only shows actions on hover ── */
 .pane-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background: var(--bg-sidebar);
-  border-bottom: 1px solid var(--border-subtle);
-  height: 36px;
+  justify-content: flex-end;
+  padding: 2px 6px;
+  height: 24px;
+  flex-shrink: 0;
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 0.12s;
 }
 
-.pane-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.pane-path {
-  font-size: 12px;
-  color: var(--text-secondary);
+.terminal-pane:hover > .pane-header,
+.pane-header:hover {
+  opacity: 1;
 }
 
 .pane-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
 }
 
 .pane-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 4px;
   color: var(--text-muted);
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.12s, color 0.12s;
 }
 
 .pane-btn:hover {
@@ -54,181 +59,102 @@
   color: var(--text-primary);
 }
 
-.pane-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 16px 20px;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-/* XTerm.js mount container — live terminal overlay */
-.xterm-container {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  overflow: hidden;
-}
-
-.xterm-container .xterm {
-  height: 100%;
-  padding: 8px 12px;
-}
-
-/* Welcome Section */
-.welcome-section {
-  margin-bottom: 24px;
-}
-
-.welcome-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-}
-
-.welcome-icon {
-  font-size: 16px;
-}
-
-.welcome-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.welcome-shortcuts {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.shortcut-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.shortcut-keys {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.shortcut-keys kbd {
-  background: var(--bg-selected);
-  border: 1px solid var(--border-color);
-  border-radius: 3px;
-  padding: 2px 6px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-}
-
-.shortcut-desc {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.checkbox-item {
-  margin-top: 4px;
-}
-
-.check-icon {
-  color: var(--accent-blue);
-}
-
-.dont-show {
-  display: inline-block;
-  margin-top: 12px;
-  color: var(--text-muted);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.dont-show:hover {
-  color: var(--text-secondary);
-  text-decoration: underline;
-}
-
-/* Command Blocks */
-.command-block {
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  padding-bottom: 12px;
-}
-
-.block-command {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.prompt-symbol {
-  color: var(--accent-green);
-  font-weight: 600;
-}
-
-.command-text {
-  color: var(--text-primary);
-}
-
-.block-output {
-  margin-top: 8px;
-  padding-left: 16px;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.block-output.error {
+.pane-btn-close:hover {
+  background: rgba(239, 68, 68, 0.15);
   color: #ef4444;
 }
 
-/* Footer / Input */
+/* ── Content area — eats all remaining space between header & footer ── */
+.pane-content {
+  flex: 1 1 0%;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  width: 100%;
+  background: #000000;
+}
+
+.agent-blocks-layer {
+  position: absolute;
+  right: 18px;
+  bottom: 118px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, calc(100% - 36px));
+  max-height: calc(100% - 150px);
+  overflow-y: auto;
+  pointer-events: none;
+}
+
+.agent-blocks-layer > * {
+  pointer-events: auto;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+/* ── Footer / Input — pinned to bottom of stack ── */
 .pane-footer {
+  flex-shrink: 0;
   border-top: 1px solid var(--border-subtle);
   background: #000000;
+  position: relative;
+  z-index: 4;
+  width: 100%;
+  overflow: hidden;
 }
 
 .status-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 12px;
+  gap: 10px;
+  padding: 5px 14px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+  overflow: hidden;
+  height: 28px;
 }
 
 .version-badge {
   background: var(--accent-orange);
   color: #000;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
 }
 
 .path-info {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  background: var(--bg-selected);
-  padding: 3px 10px;
-  border-radius: 4px;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  min-width: 0;
+  max-width: 280px;
+}
+
+.path-info span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .git-info {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   color: var(--accent-purple);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .branch-name {
@@ -237,20 +163,84 @@
 
 .git-changes {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
+}
+
+.status-hint-agent {
+  margin-left: auto;
 }
 
 .input-container {
+  padding: 14px 18px;
+  position: relative;
+  z-index: 10;
+}
+
+.running-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #3b82f6;
+}
+
+.running-indicator-inline {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3b82f6;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.command-input-shell {
+  position: relative;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.command-input-shell:focus-within {
+  border-color: var(--accent-blue);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.command-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
   padding: 12px 16px;
+  pointer-events: none;
+  white-space: pre;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.command-ghost-typed {
+  color: transparent;
+}
+
+.command-ghost-completion {
+  color: var(--text-muted);
 }
 
 .command-input {
   width: 100%;
+  position: relative;
+  z-index: 1;
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: 14px;
   caret-color: var(--text-primary);
+  outline: none;
+  padding: 12px 16px;
 }
 
 .command-input::placeholder {
@@ -261,7 +251,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 7px;
   font-size: 11px;
   color: var(--text-muted);
 }

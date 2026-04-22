@@ -1,6 +1,6 @@
 .sessions-sidebar {
-  width: 200px;
-  min-width: 200px;
+  width: 180px;
+  min-width: 180px;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
   display: flex;
@@ -11,9 +11,40 @@
 .sidebar-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 8px 12px;
+  gap: 0;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.toolbar-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.toolbar-item:hover .toolbar-btn {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
+}
+
+.toolbar-item:hover .shortcut-badge {
+  opacity: 1;
+}
+
+.shortcut-badge {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: var(--bg-selected);
+  padding: 1px 4px;
+  border-radius: 3px;
+  line-height: 1.2;
+  opacity: 0;
+  transition: opacity 0.12s;
+  white-space: nowrap;
 }
 
 .toolbar-btn {
@@ -36,7 +67,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -80,6 +111,13 @@
   color: var(--text-primary);
 }
 
+.shortcut-badge-inline {
+  font-size: 8px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+
 .sessions-list {
   flex: 1;
   overflow-y: auto;
@@ -88,33 +126,63 @@
 
 .session-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 7px 12px;
   cursor: pointer;
   transition: background 0.15s;
+  position: relative;
+  border-left: 2px solid transparent;
+}
+
+.session-item.selected {
+  background: var(--bg-selected);
+  border-left-color: var(--accent-orange);
 }
 
 .session-item:hover {
   background: var(--bg-sidebar-hover);
 }
 
-.session-item.selected {
-  background: var(--bg-selected);
+.session-delete-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: auto;
+  opacity: 0;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.session-item:hover .session-delete-btn {
+  display: flex;
+  opacity: 1;
+}
+
+.session-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
 }
 
 .session-icon {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  margin-top: 1px;
 }
 
-.claude-icon {
-  color: var(--accent-orange);
+.session-terminal-icon {
+  color: var(--text-muted);
+}
+
+.session-item.selected .session-terminal-icon {
+  color: var(--text-primary);
 }
 
 .terminal-prompt {
@@ -129,21 +197,88 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow: hidden;
 }
 
 .session-name {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.session-path {
+.session-detail {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.2s, opacity 0.15s, margin 0.15s;
+}
+
+.session-item:hover .session-detail,
+.session-item.selected .session-detail {
+  max-height: 20px;
+  opacity: 1;
+  margin-top: 2px;
+}
+
+/* ── Search results dropdown ── */
+.search-results-dropdown {
+  border-bottom: 1px solid var(--border-subtle);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.1s;
+}
+
+.search-result-item:hover {
+  background: var(--bg-sidebar-hover);
+}
+
+.search-result-item.searching,
+.search-result-item.no-results {
+  justify-content: center;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.result-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.result-name {
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-path {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+}
+
+/* ── Collapsed state ── */
+.sessions-sidebar.collapsed {
+  width: auto;
+  min-width: auto;
 }

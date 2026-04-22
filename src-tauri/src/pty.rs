@@ -1,10 +1,22 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+
+/// Per-session metrics tracked by the PTY manager
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetrics {
+    pub bytes_read: u64,
+    pub commands_seen: u64,
+    pub created_at_secs: u64,  // seconds since UNIX epoch (for JSON serialization)
+    pub last_activity_secs: u64,
+    pub is_alive: bool,
+}
 
 // ===========================================================================
 // Data structures
@@ -16,6 +28,7 @@ pub struct PtySessionInfo {
     pub id: String,
     pub pane_id: String,
     pub cwd: String,
+    pub shell_kind: String,
     pub created_at: i64,
     pub is_alive: bool,
 }
@@ -24,9 +37,10 @@ struct PtySession {
     #[allow(dead_code)]
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    _child: Box<dyn portable_pty::Child + Send>,
+    _child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
     alive: Arc<Mutex<bool>>,
     cwd: Arc<Mutex<String>>,
+    metrics: Arc<Mutex<SessionMetrics>>,
 }
 
 // ===========================================================================
@@ -35,6 +49,18 @@ struct PtySession {
 
 pub struct PtyManager {
     sessions: HashMap<String, PtySession>,
+}
+
+/// Output buffer configuration for batched PTY output flushing
+const OUTPUT_BUFFER_CAPACITY: usize = 32 * 1024; // 32 KB
+const OUTPUT_FLUSH_INTERVAL_MS: u64 = 8; // flush after 8ms of silence
+
+/// Current UNIX timestamp in seconds (for metrics serialization)
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl PtyManager {
@@ -88,12 +114,18 @@ impl PtyManager {
                 return Err("No compatible shell found".to_string());
             }
         };
+        #[cfg(target_os = "windows")]
+        let shell_kind = "cmd".to_string();
+        #[cfg(not(target_os = "windows"))]
+        let shell_kind = "posix".to_string();
 
         // Use /K on Windows for interactive shell (keeps running)
         // On Unix, bash/zsh stay interactive by default
         #[cfg(target_os = "windows")]
         {
             cmd.arg("/K");
+            cmd.env("TERM", "xterm-256color");
+            cmd.env("PROMPT", "$E]7;file://localhost/$P$E\\$P$G");
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -109,6 +141,7 @@ impl PtyManager {
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("Failed to spawn shell in PTY: {}", e))?;
+        let shared_child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>> = Arc::new(Mutex::new(child));
 
         // The slave is consumed by spawn_command; we keep the master for I/O
         let master = pair.master;
@@ -121,28 +154,78 @@ impl PtyManager {
         let session_cwd = Arc::new(Mutex::new(cwd.clone()));
         let read_alive = alive.clone();
         let emit_cwd = session_cwd.clone();
+        let emit_child = shared_child.clone();
+
+        // Session metrics — shared between read thread and query path
+        let now = unix_secs_now();
+        let session_metrics = Arc::new(Mutex::new(SessionMetrics {
+            bytes_read: 0,
+            commands_seen: 0,
+            created_at_secs: now,
+            last_activity_secs: now,
+            is_alive: true,
+        }));
+        let read_metrics = session_metrics.clone();
 
         let emit_pane_id = pane_id.clone();
         let emit_session = session_id.clone();
         let app = app_handle.clone();
 
-        // Spawn background thread to read PTY output and emit events
+        // Spawn background thread to read PTY output and emit events (with buffering)
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            // Output buffer for batching — reduces Tauri event firehose
+            let mut output_buffer: Vec<u8> = Vec::with_capacity(OUTPUT_BUFFER_CAPACITY);
+            let mut last_emit = Instant::now();
+
+            // Flush accumulated output buffer as a single Tauri event.
+            let flush_output = |buffer: &mut Vec<u8>| -> bool {
+                if buffer.is_empty() {
+                    return false;
+                }
+                let output = String::from_utf8_lossy(buffer).to_string();
+                let _ = app.emit("pty://output", serde_json::json!({
+                    "sessionId": &emit_session,
+                    "paneId": &emit_pane_id.clone(),
+                    "data": output,
+                }));
+                buffer.clear();
+                true
+            };
+
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
-                        // EOF — PTY closed
+                        // EOF — flush remaining buffer, then signal close
+                        flush_output(&mut output_buffer);
                         *read_alive.lock().unwrap() = false;
+                        {
+                            let mut m = read_metrics.lock().unwrap();
+                            m.is_alive = false;
+                            m.last_activity_secs = unix_secs_now();
+                        }
+                        let exit_code = emit_child
+                            .lock()
+                            .ok()
+                            .and_then(|mut child| child.wait().ok())
+                            .map(|status| status.exit_code() as i64);
                         let _ = app.emit("pty://closed", serde_json::json!({
                             "sessionId": &emit_session,
                             "paneId": &emit_pane_id,
+                            "exitCode": exit_code,
                         }));
                         break;
                     }
                     Ok(n) => {
                         let data = &buf[..n];
-                        let output = String::from_utf8_lossy(data).to_string();
+
+                        // Update metrics
+                        {
+                            let mut m = read_metrics.lock().unwrap();
+                            m.bytes_read += n as u64;
+                            let now_secs = unix_secs_now();
+                            m.last_activity_secs = now_secs;
+                        }
 
                         // Detect CWD changes from OSC 7 escape sequences (terminal standard)
                         if let Some(new_cwd) = extract_osc7_cwd(data) {
@@ -154,16 +237,38 @@ impl PtyManager {
                             }));
                         }
 
-                        // Emit output to the specific pane
-                        let _ = app.emit("pty://output", serde_json::json!({
-                            "sessionId": &emit_session,
-                            "paneId": &emit_pane_id.clone(),
-                            "data": output,
-                        }));
+                        // Buffer output instead of emitting immediately
+                        output_buffer.extend_from_slice(data);
+
+                        // Flush when buffer is full
+                        if output_buffer.len() >= OUTPUT_BUFFER_CAPACITY {
+                            let _ = flush_output(&mut output_buffer);
+                            last_emit = Instant::now();
+                        } else if last_emit.elapsed() >= Duration::from_millis(OUTPUT_FLUSH_INTERVAL_MS) {
+                            // Also flush after interval of silence (keeps latency low)
+                            let _ = flush_output(&mut output_buffer);
+                            last_emit = Instant::now();
+                        }
                     }
                     Err(e) => {
+                        // On error, flush any buffered output before dying
+                        flush_output(&mut output_buffer);
                         eprintln!("[PTY] Read error for {}: {}", emit_session, e);
                         *read_alive.lock().unwrap() = false;
+                        {
+                            let mut m = read_metrics.lock().unwrap();
+                            m.is_alive = false;
+                        }
+                        let exit_code = emit_child
+                            .lock()
+                            .ok()
+                            .and_then(|mut child| child.try_wait().ok().flatten())
+                            .map(|status| status.exit_code() as i64);
+                        let _ = app.emit("pty://closed", serde_json::json!({
+                            "sessionId": &emit_session,
+                            "paneId": &emit_pane_id,
+                            "exitCode": exit_code,
+                        }));
                         break;
                     }
                 }
@@ -175,9 +280,10 @@ impl PtyManager {
             PtySession {
                 master,
                 writer,
-                _child: child,
+                _child: shared_child,
                 alive,
                 cwd: session_cwd,
+                metrics: session_metrics,
             },
         );
 
@@ -185,6 +291,7 @@ impl PtyManager {
             id: session_id,
             pane_id,
             cwd,
+            shell_kind,
             created_at: chrono::Utc::now().timestamp_millis(),
             is_alive: true,
         })
@@ -196,6 +303,18 @@ impl PtyManager {
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| format!("PTY session '{}' not found", session_id))?;
+
+        {
+            let mut metrics = session.metrics.lock().unwrap();
+            metrics.last_activity_secs = unix_secs_now();
+            let carriage_returns = data.matches('\r').count() as u64;
+            let newlines = data.matches('\n').count() as u64;
+            metrics.commands_seen += if carriage_returns > 0 {
+                carriage_returns
+            } else {
+                newlines
+            };
+        }
 
         session
             .writer
@@ -249,6 +368,7 @@ impl PtyManager {
                 id: id.clone(),
                 pane_id: String::new(),
                 cwd: sess.cwd.lock().unwrap().clone(),
+                shell_kind: if cfg!(target_os = "windows") { "cmd".to_string() } else { "posix".to_string() },
                 created_at: 0,
                 is_alive: *sess.alive.lock().unwrap(),
             })
@@ -276,6 +396,15 @@ impl PtyManager {
             *session.alive.lock().unwrap() = false;
         }
     }
+
+    /// Get metrics for a specific PTY session
+    pub fn get_session_metrics(&self, session_id: &str) -> Result<SessionMetrics, String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| format!("PTY session '{}' not found", session_id))?;
+        Ok(session.metrics.lock().unwrap().clone())
+    }
 }
 
 impl Default for PtyManager {
@@ -293,31 +422,25 @@ impl Default for PtyManager {
 fn extract_osc7_cwd(data: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(data);
 
-    // Pattern: \x1b]7;file://...<BEL> or \x1b]7;file://...\x1b\\
-    let osc7_prefix = "\x1b]7;file://";
-    let osc7_suffixes: &[&str] = &["\x07", "\x1b\\"]; // BEL or ST
+    let start = text.find("\x1b]7;file://")?;
+    let payload = &text[start + "\x1b]7;file://".len()..];
+    let end = payload
+        .find('\x07')
+        .or_else(|| payload.find("\x1b\\"))?;
+    let file_url = &payload[..end];
+    let path_start = file_url.find('/')?;
+    let decoded = url_decode(&file_url[path_start..]);
 
-    if let Some(start) = text.find(osc7_prefix) {
-        let after_prefix = &text[start + osc7_prefix.len()..];
-        for suffix in osc7_suffixes {
-            if let Some(end) = after_prefix.find(*suffix) {
-                let file_url = &after_prefix[..end];
-                // Extract path from file://hostname/path
-                let after_scheme = match file_url.find("://") {
-                    Some(i) => &file_url[i + 3..],
-                    None => file_url,
-                };
-                if let Some(path_start) = after_scheme.find('/') {
-                    if let Some(second_slash) = after_scheme[path_start + 1..].find('/') {
-                        let path = &after_scheme[path_start + 1 + second_slash + 1..];
-                        return Some(url_decode(path));
-                    }
-                }
-            }
-        }
+    #[cfg(target_os = "windows")]
+    {
+        let trimmed = decoded.trim_start_matches('/');
+        return Some(trimmed.replace('/', "\\"));
     }
 
-    None
+    #[cfg(not(target_os = "windows"))]
+    {
+        Some(decoded)
+    }
 }
 
 /// Minimal URL percent decoding

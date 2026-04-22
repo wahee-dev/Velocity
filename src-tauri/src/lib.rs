@@ -1,11 +1,21 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
+mod ai;
 mod pty;
+pub use ai::{
+    ai_prompt,
+    ai_to_command,
+    classify_terminal_input,
+    revert_agent_task,
+    start_agent_task,
+    AgentManager,
+};
 pub use pty::PtyManager;
 
 // ===========================================================================
@@ -76,6 +86,29 @@ pub enum CommandStatus {
 pub struct GitStatus {
     pub branch: String,
     pub changes: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutocompleteIndex {
+    pub cwd: String,
+    pub generated_at: i64,
+    pub entries: Vec<AutocompleteEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutocompleteEntry {
+    pub value: String,
+    pub kind: AutocompleteKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutocompleteKind {
+    Script,
+    Alias,
+    File,
 }
 
 mod chrono_ts {
@@ -447,23 +480,6 @@ fn switch_tab(tab_id: &str, state: tauri::State<'_, Mutex<AppState>>) -> Result<
 }
 
 // ===========================================================================
-// GROUP 6 — AI Features
-// ===========================================================================
-
-#[tauri::command]
-async fn ai_prompt(prompt: &str) -> Result<String, String> {
-    Ok(format!("[AI Response] Received prompt: {}", prompt))
-}
-
-#[tauri::command]
-async fn ai_to_command(natural_language: &str) -> Result<String, String> {
-    Ok(format!(
-        "# Suggested command for: {}\necho 'placeholder'",
-        natural_language
-    ))
-}
-
-// ===========================================================================
 // GROUP 7 — Clipboard & Utilities
 // ===========================================================================
 
@@ -604,6 +620,251 @@ fn open_file(path: &str, app: tauri::AppHandle) -> Result<(), String> {
 }
 
 // ===========================================================================
+// GROUP 9.5 — File Search
+// ===========================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub path: String,
+    pub name: String,
+}
+
+/// Recursively search for files by name in a directory.
+#[tauri::command]
+fn search_files(path: String, query: String) -> Result<Vec<SearchResult>, String> {
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+    let base = std::path::Path::new(&path);
+
+    if !base.exists() || !base.is_dir() {
+        return Err(format!("Directory does not exist: {}", path));
+    }
+
+    fn walk(dir: &std::path::Path, query_lower: &str, results: &mut Vec<SearchResult>) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("Failed to read dir: {}", e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let metadata = entry.metadata().map_err(|e| format!("Failed to read metadata: {}", e))?;
+
+            if metadata.is_dir() {
+                // Skip hidden dirs (like .git, node_modules) for performance
+                if name.starts_with('.') || name == "node_modules" || name == "target" {
+                    continue;
+                }
+                walk(&entry.path(), query_lower, results)?;
+            } else if name.to_lowercase().contains(query_lower) {
+                results.push(SearchResult {
+                    path: entry.path().to_string_lossy().to_string(),
+                    name,
+                });
+            }
+
+            // Limit results to prevent slowdown
+            if results.len() >= 100 {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    walk(base, &query_lower, &mut results)?;
+    Ok(results)
+}
+
+const MAX_AUTOCOMPLETE_DEPTH: usize = 3;
+const MAX_AUTOCOMPLETE_FILE_ENTRIES: usize = 256;
+const AUTOCOMPLETE_SKIP_DIRS: &[&str] = &[".git", ".idea", ".next", ".turbo", "dist", "node_modules", "target"];
+const COMMON_SHELL_ALIASES: &[&str] = &[
+    "cd",
+    "cls",
+    "clear",
+    "dir",
+    "gc",
+    "gci",
+    "grep",
+    "la",
+    "ll",
+    "ls",
+    "mkdir",
+    "ni",
+    "pwd",
+    "rg",
+    "sls",
+    "touch",
+    "type",
+];
+
+#[tauri::command]
+fn build_autocomplete_index(path: String) -> Result<AutocompleteIndex, String> {
+    let cwd = PathBuf::from(&path);
+    if !cwd.exists() || !cwd.is_dir() {
+        return Err(format!("Directory does not exist: {}", path));
+    }
+
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(package_json_path) = find_nearest_package_json(&cwd) {
+        for value in read_package_script_commands(&package_json_path)? {
+            push_autocomplete_entry(
+                &mut entries,
+                &mut seen,
+                value,
+                AutocompleteKind::Script,
+            );
+        }
+    }
+
+    for alias in COMMON_SHELL_ALIASES {
+        push_autocomplete_entry(
+            &mut entries,
+            &mut seen,
+            (*alias).to_string(),
+            AutocompleteKind::Alias,
+        );
+    }
+
+    collect_autocomplete_file_entries(
+        &cwd,
+        &cwd,
+        0,
+        &mut entries,
+        &mut seen,
+    )?;
+
+    Ok(AutocompleteIndex {
+        cwd: cwd.to_string_lossy().to_string(),
+        generated_at: chrono::Utc::now().timestamp_millis(),
+        entries,
+    })
+}
+
+fn push_autocomplete_entry(
+    entries: &mut Vec<AutocompleteEntry>,
+    seen: &mut HashSet<String>,
+    value: String,
+    kind: AutocompleteKind,
+) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let dedupe_key = trimmed.to_lowercase();
+    if !seen.insert(dedupe_key) {
+        return;
+    }
+
+    entries.push(AutocompleteEntry {
+        value: trimmed.to_string(),
+        kind,
+    });
+}
+
+fn find_nearest_package_json(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .map(|dir| dir.join("package.json"))
+        .find(|candidate| candidate.is_file())
+}
+
+fn read_package_script_commands(package_json_path: &Path) -> Result<Vec<String>, String> {
+    let content = std::fs::read_to_string(package_json_path)
+        .map_err(|e| format!("Failed to read {}: {}", package_json_path.display(), e))?;
+
+    let package_json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {}", package_json_path.display(), e))?;
+
+    let Some(scripts) = package_json
+        .get("scripts")
+        .and_then(|value| value.as_object()) else {
+        return Ok(Vec::new());
+    };
+
+    let mut commands: Vec<String> = scripts
+        .keys()
+        .map(|name| format!("npm run {}", name))
+        .collect();
+    commands.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(commands)
+}
+
+fn collect_autocomplete_file_entries(
+    base: &Path,
+    dir: &Path,
+    depth: usize,
+    entries: &mut Vec<AutocompleteEntry>,
+    seen: &mut HashSet<String>,
+) -> Result<(), String> {
+    if depth > MAX_AUTOCOMPLETE_DEPTH || entries.len() >= MAX_AUTOCOMPLETE_FILE_ENTRIES {
+        return Ok(());
+    }
+
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+
+    let mut children = Vec::new();
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || AUTOCOMPLETE_SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+
+        children.push((name, entry.path(), metadata.is_dir()));
+    }
+
+    children.sort_by(|a, b| match (a.2, b.2) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
+    });
+
+    for (_, child_path, is_dir) in children {
+        if entries.len() >= MAX_AUTOCOMPLETE_FILE_ENTRIES {
+            break;
+        }
+
+        if let Ok(relative) = child_path.strip_prefix(base) {
+            let display = relative.to_string_lossy().to_string();
+            if !display.is_empty() {
+                push_autocomplete_entry(
+                    entries,
+                    seen,
+                    display,
+                    AutocompleteKind::File,
+                );
+            }
+        }
+
+        if is_dir && depth < MAX_AUTOCOMPLETE_DEPTH {
+            collect_autocomplete_file_entries(
+                base,
+                &child_path,
+                depth + 1,
+                entries,
+                seen,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
 // GROUP 10 — PTY Multi-Session Manager
 // ===========================================================================
 
@@ -658,6 +919,16 @@ fn list_ptys(pty: tauri::State<'_, Mutex<PtyManager>>) -> Result<Vec<pty::PtySes
     Ok(mgr.list())
 }
 
+/// Get health/metrics for a specific PTY session
+#[tauri::command]
+fn get_session_metrics(
+    session_id: &str,
+    pty: tauri::State<'_, Mutex<PtyManager>>,
+) -> Result<pty::SessionMetrics, String> {
+    let mgr = pty.lock().map_err(|e| e.to_string())?;
+    mgr.get_session_metrics(session_id)
+}
+
 // ===========================================================================
 // GROUP 11 — State Synchronization (Terminal <-> File Tree)
 // ===========================================================================
@@ -695,8 +966,10 @@ fn change_directory(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_mcp_bridge::init())
         .manage(Mutex::new(AppState::default()))
         .manage(Mutex::new(PtyManager::new()))
+        .manage(Arc::new(Mutex::new(AgentManager::new())))
         .invoke_handler(tauri::generate_handler![
             // Window controls
             minimize_window,
@@ -721,6 +994,9 @@ pub fn run() {
             // AI
             ai_prompt,
             ai_to_command,
+            classify_terminal_input,
+            start_agent_task,
+            revert_agent_task,
             // Utilities
             copy_to_clipboard,
             clear_history,
@@ -732,12 +1008,15 @@ pub fn run() {
             open_file,
             read_dir,
             get_git_status,
+            search_files,
+            build_autocomplete_index,
             // PTY multi-session manager
             spawn_pty,
             write_to_pty,
             resize_pty,
             kill_pty,
             list_ptys,
+            get_session_metrics,
             // State sync (terminal <-> file tree)
             get_cwd,
             change_directory,

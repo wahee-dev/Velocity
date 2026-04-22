@@ -1,266 +1,410 @@
-import { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
-import type { TerminalSession, CommandBlock } from '../types';
+/* @solid */
+import {
+  createContext,
+  createEffect,
+  createSignal,
+  onMount,
+  onCleanup,
+  useContext,
+} from "solid-js";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  AgentTask,
+  CommandBlock,
+  TerminalSession,
+} from "../types";
 
-// ── State & Actions ──────────────────────────────────────────────
+// ── State ────────────────────────────────────────────────────────────
 
 interface TerminalState {
   sessions: Map<string, TerminalSession>;
   activeSessionId: string | null;
 }
 
-type TerminalAction =
-  | { type: 'CREATE_SESSION'; id: string; path: string }
-  | { type: 'REMOVE_SESSION'; id: string }
-  | { type: 'SET_ACTIVE_SESSION'; id: string }
-  | { type: 'APPEND_BLOCK'; sessionId: string; block: CommandBlock }
-  | { type: 'UPDATE_BLOCK'; sessionId: string; blockId: string; partial: Partial<CommandBlock> }
-  | { type: 'SET_INPUT_VALUE'; sessionId: string; value: string }
-  | { type: 'SET_SHOW_WELCOME'; sessionId: string; show: boolean }
-  | { type: 'SET_GIT_STATUS'; sessionId: string; gitStatus: { branch: string; changes: number } };
-
 function createDefaultSession(id: string, path: string): TerminalSession {
   return {
     id,
     path,
     blocks: [],
-    inputValue: '',
+    agentTasks: [],
+    inputValue: "",
     showWelcome: true,
     isActive: false,
-    gitStatus: { branch: 'main', changes: 0 },
+    gitStatus: { branch: "main", changes: 0 },
   };
 }
 
-function terminalReducer(state: TerminalState, action: TerminalAction): TerminalState {
-  const next = new Map(state.sessions);
-
-  switch (action.type) {
-    case 'CREATE_SESSION':
-      next.set(action.id, createDefaultSession(action.id, action.path));
-      return { ...state, sessions: next };
-
-    case 'REMOVE_SESSION':
-      next.delete(action.id);
-      return {
-        ...state,
-        sessions: next,
-        activeSessionId: state.activeSessionId === action.id ? null : state.activeSessionId,
-      };
-
-    case 'SET_ACTIVE_SESSION': {
-      for (const [k, s] of next) {
-        next.set(k, { ...s, isActive: k === action.id });
-      }
-      return { ...state, sessions: next, activeSessionId: action.id };
-    }
-
-    case 'APPEND_BLOCK': {
-      const session = next.get(action.sessionId);
-      if (!session) return state;
-      next.set(action.sessionId, {
-        ...session,
-        blocks: [...session.blocks, action.block],
-      });
-      return { ...state, sessions: next };
-    }
-
-    case 'UPDATE_BLOCK': {
-      const session = next.get(action.sessionId);
-      if (!session) return state;
-      next.set(action.sessionId, {
-        ...session,
-        blocks: session.blocks.map(b =>
-          b.id === action.blockId ? { ...b, ...action.partial } : b
-        ),
-      });
-      return { ...state, sessions: next };
-    }
-
-    case 'SET_INPUT_VALUE': {
-      const session = next.get(action.sessionId);
-      if (!session) return state;
-      next.set(action.sessionId, { ...session, inputValue: action.value });
-      return { ...state, sessions: next };
-    }
-
-    case 'SET_SHOW_WELCOME': {
-      const session = next.get(action.sessionId);
-      if (!session) return state;
-      next.set(action.sessionId, { ...session, showWelcome: action.show });
-      return { ...state, sessions: next };
-    }
-
-    case 'SET_GIT_STATUS': {
-      const session = next.get(action.sessionId);
-      if (!session) return state;
-      next.set(action.sessionId, { ...session, gitStatus: action.gitStatus });
-      return { ...state, sessions: next };
-    }
-
-    default:
-      return state;
-  }
+function isCompactableStatus(status: CommandBlock["status"]): boolean {
+  return status === "success" || status === "error" || status === "interrupted";
 }
 
-// ── Context ───────────────────────────────────────────────────────
+/** Compact older completed blocks into a single summary block. Returns null if nothing to compact. */
+function compactOlderBlocks(
+  blocks: CommandBlock[],
+  keepLastN: number
+): CommandBlock[] | null {
+  if (blocks.length <= keepLastN) return null;
+
+  const recentBlocks = blocks.slice(-keepLastN);
+  const olderBlocks = blocks.slice(0, -keepLastN);
+  const compactable = olderBlocks.filter((b) => isCompactableStatus(b.status));
+  if (compactable.length === 0) return null;
+
+  const keptOlder = olderBlocks.filter((b) => !isCompactableStatus(b.status));
+  const compactedBlock: CommandBlock = {
+    id: `gc-${Date.now()}`,
+    command: `${compactable.length} earlier command${compactable.length > 1 ? "s" : ""} (compacted)`,
+    status: "success",
+    timestamp:
+      compactable[compactable.length - 1]?.timestamp ?? new Date(),
+    compacted: true,
+    compactedCount: compactable.length,
+    isTruncated: false,
+    lineCount: 0,
+    outputSizeBytes: 0,
+  };
+
+  return [...keptOlder, compactedBlock, ...recentBlocks];
+}
+
+/** Update a single field on a session — eliminates repeated get/spread/set boilerplate. */
+function updateSessionField<K extends keyof TerminalSession>(
+  state: () => TerminalState,
+  setState: (next: TerminalState) => void,
+  sessionId: string,
+  field: K,
+  value: TerminalSession[K]
+): void {
+  const s = state();
+  const session = s.sessions.get(sessionId);
+  if (!session) return;
+  setState({
+    ...s,
+    sessions: new Map(s.sessions).set(sessionId, {
+      ...session,
+      [field]: value,
+    }),
+  });
+}
+
+// ── Context ─────────────────────────────────────────────────────────
 
 interface TerminalContextValue {
-  state: TerminalState;
-  dispatch: React.Dispatch<TerminalAction>;
-  createSession: (path: string) => string;
+  state: () => TerminalState;
+  setState: (next: TerminalState) => void;
+
+  createSession: (path: string, id?: string) => string;
   removeSession: (id: string) => void;
   setActiveSession: (id: string) => void;
+  setSessionPath: (sessionId: string, path: string) => void;
   appendBlock: (sessionId: string, block: CommandBlock) => void;
-  updateBlock: (sessionId: string, blockId: string, partial: Partial<CommandBlock>) => void;
+  upsertAgentTask: (sessionId: string, task: AgentTask) => void;
+  updateBlock: (
+    sessionId: string,
+    blockId: string,
+    partial: Partial<CommandBlock>
+  ) => void;
+  setBlockOutput: (
+    sessionId: string,
+    blockId: string,
+    output: Pick<
+      CommandBlock,
+      "htmlOutput" | "rawOutput" | "isTruncated" | "lineCount" | "outputSizeBytes"
+    >
+  ) => void;
   setInputValue: (sessionId: string, value: string) => void;
   setShowWelcome: (sessionId: string, show: boolean) => void;
-  setGitStatus: (sessionId: string, gitStatus: { branch: string; changes: number }) => void;
+  setGitStatus: (
+    sessionId: string,
+    gitStatus: { branch: string; changes: number }
+  ) => void;
+  gcBlocks: (sessionId: string, keepLastN?: number) => void;
   onExecute: (sessionId: string, command: string) => void;
+  startAgentTask: (
+    sessionId: string,
+    prompt: string,
+    cwd: string
+  ) => Promise<AgentTask>;
+  revertAgentTask: (taskId: string) => Promise<AgentTask>;
 }
 
-const TerminalContext = createContext<TerminalContextValue | null>(null);
+const Ctx = createContext<TerminalContextValue | null>(null);
 
-// ── Provider ──────────────────────────────────────────────────────
+// ── Provider ────────────────────────────────────────────────────────
 
-export function TerminalProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(terminalReducer, {
+export function TerminalProvider(props: { children: any }) {
+  const [state, setStateRaw] = createSignal<TerminalState>({
     sessions: new Map(),
     activeSessionId: null,
   });
 
-  // Keep a stable ref to the latest dispatch for use in event listeners
-  const dispatchRef = useRef(dispatch);
-  const stateRef = useRef(state);
-  dispatchRef.current = dispatch;
+  let latestState: TerminalState = state();
 
-  // Sync stateRef so event listeners can read current state
-  useEffect(() => { stateRef.current = state; }, [state]);
+  const setState = (next: TerminalState) => {
+    latestState = next;
+    setStateRaw(next);
+  };
 
-  // ── Listen for Rust-side command lifecycle events ─────────────
-  useEffect(() => {
+  createEffect(() => {
+    latestState = state();
+  });
+
+  // ── Rust event listeners ───────────────────────────────────────
+  onMount(() => {
     const unlisteners: (() => void)[] = [];
 
-    async function setupListeners() {
-      // When Rust finishes a one-shot command, update the matching block
-      const unlistenFinish = await listen<{
-        blockId: string;
-        command: string;
-        output: string;
-        status: string;
-      }>('command-finish', (event) => {
-        const { blockId, output, status } = event.payload;
-        const currentState = stateRef.current;
+    listen<AgentTask>("agent://update", (event) => {
+      const task = event.payload;
+      const cur = latestState;
+      const session = cur.sessions.get(task.sessionId);
+      if (!session) return;
 
-        // Find which session owns this block and update it
-        for (const [sid, sess] of currentState.sessions) {
-          if (sess.blocks.some(b => b.id === blockId)) {
-            dispatchRef.current({
-              type: 'UPDATE_BLOCK',
-              sessionId: sid,
-              blockId,
-              partial: {
-                output,
-                status: status === 'success' ? ('success' as const) : ('error' as const),
-              },
-            });
-            break;
-          }
-        }
+      const existingIndex = session.agentTasks.findIndex(
+        (t) => t.id === task.id
+      );
+      const agentTasks =
+        existingIndex >= 0
+          ? session.agentTasks.map((t) => (t.id === task.id ? task : t))
+          : [...session.agentTasks, task];
+      agentTasks.sort((a, b) => a.startedAt - b.startedAt);
+
+      setState({
+        ...cur,
+        sessions: new Map(cur.sessions).set(task.sessionId, {
+          ...session,
+          agentTasks,
+        }),
       });
+    }).then((unlisten) => unlisteners.push(unlisten));
 
-      unlisteners.push(unlistenFinish);
-    }
+    onCleanup(() => unlisteners.forEach((fn) => fn()));
+  });
 
-    setupListeners();
+  // ── Actions ───────────────────────────────────────────────────
 
-    return () => { unlisteners.forEach(fn => fn()); };
-  }, []);
+  const createSession = (path: string, id?: string): string => {
+    const sessionId = id ?? crypto.randomUUID();
+    const s = state();
+    const next = new Map(s.sessions);
+    next.set(sessionId, createDefaultSession(sessionId, path));
+    setState({ ...s, sessions: next });
 
-  const createSession = useCallback((path: string) => {
-    const id = crypto.randomUUID();
-    dispatch({ type: 'CREATE_SESSION', id, path });
-
-    // Fetch real git status for this session's directory
-    invoke<{ branch: string; changes: number }>('get_git_status', { path })
+    invoke<{ branch: string; changes: number }>("get_git_status", { path })
       .then((gs) => {
-        dispatch({ type: 'SET_GIT_STATUS', sessionId: id, gitStatus: gs });
+        const cur = state();
+        const sess = cur.sessions.get(sessionId);
+        if (sess)
+          setState({
+            ...cur,
+            sessions: new Map(cur.sessions).set(sessionId, {
+              ...sess,
+              gitStatus: gs,
+            }),
+          });
       })
       .catch(() => {});
 
-    return id;
-  }, []);
+    return sessionId;
+  };
 
-  const removeSession = useCallback((id: string) => {
-    dispatch({ type: 'REMOVE_SESSION', id });
-  }, []);
-
-  const setActiveSession = useCallback((id: string) => {
-    dispatch({ type: 'SET_ACTIVE_SESSION', id });
-  }, []);
-
-  const appendBlock = useCallback((sessionId: string, block: CommandBlock) => {
-    dispatch({ type: 'APPEND_BLOCK', sessionId, block });
-  }, []);
-
-  const updateBlock = useCallback((sessionId: string, blockId: string, partial: Partial<CommandBlock>) => {
-    dispatch({ type: 'UPDATE_BLOCK', sessionId, blockId, partial });
-  }, []);
-
-  const setInputValue = useCallback((sessionId: string, value: string) => {
-    dispatch({ type: 'SET_INPUT_VALUE', sessionId, value });
-  }, []);
-
-  const setShowWelcome = useCallback((sessionId: string, show: boolean) => {
-    dispatch({ type: 'SET_SHOW_WELCOME', sessionId, show });
-  }, []);
-
-  const setGitStatus = useCallback((sessionId: string, gitStatus: { branch: string; changes: number }) => {
-    dispatch({ type: 'SET_GIT_STATUS', sessionId, gitStatus });
-  }, []);
-
-  /**
-   * Execute a command.
-   * - For PTY sessions: TerminalPane writes directly to the PTY via write_to_pty.
-   *   This callback also fires a one-shot execute_command for block tracking.
-   * - Blocks are created as 'running' before this fires; they get updated
-   *   when Rust emits 'command-finish'.
-   */
-  const onExecute = useCallback((_sessionId: string, command: string) => {
-    // Fire the one-shot command for output capture + block status updates.
-    // The PTY (XTerm) handles interactive I/O separately.
-    invoke('execute_command', { command }).catch((err) => {
-      console.error('[TerminalContext] execute_command error:', err);
+  const removeSession = (id: string): void => {
+    const s = state();
+    const next = new Map(s.sessions);
+    next.delete(id);
+    setState({
+      ...s,
+      sessions: next,
+      activeSessionId: s.activeSessionId === id ? null : s.activeSessionId,
     });
-  }, []);
+  };
+
+  const setActiveSession = (id: string): void => {
+    const s = state();
+    const next = new Map(s.sessions);
+    for (const [k, sess] of next) next.set(k, { ...sess, isActive: k === id });
+    setState({ ...s, sessions: next, activeSessionId: id });
+  };
+
+  const setSessionPath = (sessionId: string, path: string): void => {
+    updateSessionField(state, setState, sessionId, "path", path);
+    invoke<{ branch: string; changes: number }>("get_git_status", { path })
+      .then((gs) =>
+        updateSessionField(state, setState, sessionId, "gitStatus", gs)
+      )
+      .catch(() => {});
+  };
+
+  const appendBlock = (sessionId: string, block: CommandBlock): void => {
+    const s = state();
+    const session = s.sessions.get(sessionId);
+    if (!session) return;
+
+    let finalBlocks = [...session.blocks, block];
+
+    // Auto-GC when block count exceeds threshold
+    const compacted = compactOlderBlocks(finalBlocks, 20);
+    if (compacted) finalBlocks = compacted;
+
+    setState({
+      ...s,
+      sessions: new Map(s.sessions).set(sessionId, {
+        ...session,
+        blocks: finalBlocks,
+      }),
+    });
+  };
+
+  const upsertAgentTask = (sessionId: string, task: AgentTask): void => {
+    const s = state();
+    const session = s.sessions.get(sessionId);
+    if (!session) return;
+
+    const existingIndex = session.agentTasks.findIndex(
+      (t) => t.id === task.id
+    );
+    const agentTasks =
+      existingIndex >= 0
+        ? session.agentTasks.map((t) => (t.id === task.id ? task : t))
+        : [...session.agentTasks, task];
+    agentTasks.sort((a, b) => a.startedAt - b.startedAt);
+
+    setState({
+      ...s,
+      sessions: new Map(s.sessions).set(sessionId, {
+        ...session,
+        agentTasks,
+      }),
+    });
+  };
+
+  const updateBlock = (
+    sessionId: string,
+    blockId: string,
+    partial: Partial<CommandBlock>
+  ): void => {
+    const s = state();
+    const session = s.sessions.get(sessionId);
+    if (!session) return;
+    setState({
+      ...s,
+      sessions: new Map(s.sessions).set(sessionId, {
+        ...session,
+        blocks: session.blocks.map((b) =>
+          b.id === blockId ? { ...b, ...partial } : b
+        ),
+      }),
+    });
+  };
+
+  const setBlockOutput = (
+    sessionId: string,
+    blockId: string,
+    output: Pick<
+      CommandBlock,
+      "htmlOutput" | "rawOutput" | "isTruncated" | "lineCount" | "outputSizeBytes"
+    >
+  ): void => {
+    const s = state();
+    const session = s.sessions.get(sessionId);
+    if (!session) return;
+    setState({
+      ...s,
+      sessions: new Map(s.sessions).set(sessionId, {
+        ...session,
+        blocks: session.blocks.map((block) =>
+          block.id === blockId
+            ? { ...block, ...output }
+            : block
+        ),
+      }),
+    });
+  };
+
+  const setInputValue = (sessionId: string, value: string): void =>
+    updateSessionField(state, setState, sessionId, "inputValue", value);
+
+  const setShowWelcome = (sessionId: string, show: boolean): void =>
+    updateSessionField(state, setState, sessionId, "showWelcome", show);
+
+  const setGitStatus = (
+    sessionId: string,
+    gitStatus: { branch: string; changes: number }
+  ): void =>
+    updateSessionField(state, setState, sessionId, "gitStatus", gitStatus);
+
+  const gcBlocks = (sessionId: string, keepLastN = 20): void => {
+    const s = state();
+    const session = s.sessions.get(sessionId);
+    if (!session) return;
+
+    const compacted = compactOlderBlocks(session.blocks, keepLastN);
+    if (!compacted) return;
+
+    setState({
+      ...s,
+      sessions: new Map(s.sessions).set(sessionId, {
+        ...session,
+        blocks: compacted,
+      }),
+    });
+  };
+
+  const onExecute = (_sessionId: string, command: string): void => {
+    invoke("execute_command", { command }).catch((err) =>
+      console.error("[TerminalContext] execute_command error:", err)
+    );
+  };
+
+  const startAgentTask = async (
+    sessionId: string,
+    prompt: string,
+    cwd: string
+  ): Promise<AgentTask> => {
+    const task = await invoke<AgentTask>("start_agent_task", {
+      sessionId,
+      prompt,
+      cwd,
+    });
+    upsertAgentTask(sessionId, task);
+    return task;
+  };
+
+  const revertAgentTask = async (taskId: string): Promise<AgentTask> => {
+    const task = await invoke<AgentTask>("revert_agent_task", { taskId });
+    upsertAgentTask(task.sessionId, task);
+    return task;
+  };
 
   const value: TerminalContextValue = {
     state,
-    dispatch,
+    setState,
     createSession,
     removeSession,
     setActiveSession,
+    setSessionPath,
     appendBlock,
+    upsertAgentTask,
     updateBlock,
+    setBlockOutput,
     setInputValue,
     setShowWelcome,
     setGitStatus,
+    gcBlocks,
     onExecute,
+    startAgentTask,
+    revertAgentTask,
   };
 
-  return (
-    <TerminalContext.Provider value={value}>
-      {children}
-    </TerminalContext.Provider>
-  );
+  return <Ctx.Provider value={value}>{props.children}</Ctx.Provider>;
 }
 
-// ── Hook ──────────────────────────────────────────────────────────
+// ── Hook ────────────────────────────────────────────────────────────
 
 export function useTerminalContext(): TerminalContextValue {
-  const ctx = useContext(TerminalContext);
+  const ctx = useContext(Ctx);
   if (!ctx) {
-    throw new Error('useTerminalContext must be used within a <TerminalProvider>');
+    throw new Error("useTerminalContext must be used within a <TerminalProvider>");
   }
   return ctx;
 }

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 * {
   margin: 0;
@@ -9,26 +9,27 @@
 :root {
   --bg-primary: #000000;
   --bg-secondary: #0d0d0d;
-  --bg-sidebar: #141414;
-  --bg-sidebar-hover: #1f1f1f;
-  --bg-selected: #2a2a2a;
-  --bg-explorer: #1a1a1a;
+  --bg-sidebar: #111111;
+  --bg-sidebar-hover: #1a1a1a;
+  --bg-selected: #252525;
+  --bg-explorer: #161616;
   --bg-input: #0a0a0a;
-  
-  --border-color: #2a2a2a;
-  --border-subtle: #1a1a1a;
-  
-  --text-primary: #e0e0e0;
-  --text-secondary: #808080;
-  --text-muted: #5a5a5a;
-  --text-placeholder: #4a4a4a;
-  
+
+  --border-color: #222222;
+  --border-subtle: #181818;
+
+  --text-primary: #e8e8e8;
+  --text-secondary: #888888;
+  --text-muted: #555555;
+  --text-placeholder: #444444;
+
   --accent-orange: #f97316;
-  --accent-purple: #a855f7;
+  --accent-purple: #c084fc;
   --accent-green: #22c55e;
   --accent-blue: #3b82f6;
-  
-  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
+
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
 }
 
 html, body, #root {
@@ -37,9 +38,9 @@ html, body, #root {
   overflow: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 13px;
-  line-height: 1.2;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -67,14 +68,15 @@ html, body, #root {
   background: var(--text-muted);
 }
 
-input, textarea {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.2;
+/* Terminal input and code elements stay monospace */
+input.command-input,
+textarea.command-input,
+.code-text,
+.xterm-helper-textarea {
+  font-family: var(--font-mono) !important;
 }
 
 button {
-  font-family: var(--font-mono);
   cursor: pointer;
   border: none;
   background: none;
