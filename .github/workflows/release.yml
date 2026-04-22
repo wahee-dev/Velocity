@@ -17,9 +17,12 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          working-directory: src-tauri
 
-      - name: Update portable-pty dependencies (fixes alacritty_terminal build on macOS)
-        run: cd src-tauri && cargo update -p alacritty_terminal -p rustix-openpty -p rustix
+      - name: Update portable-ty dependencies (fixes alacritty_terminal build on macOS)
+        working-directory: src-tauri
+        run: cargo update -p alacritty_terminal -p rustix-openpty -p rustix@0.38.44
 
       - uses: actions/setup-node@v4
         with:
