@@ -11,9 +11,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Update portable-pty dependencies (fixes alacritty_terminal build on macOS)
+        run: cd src-tauri && cargo update -p alacritty_terminal -p rustix-openpty -p rustix
 
       - uses: actions/setup-node@v4
         with:
