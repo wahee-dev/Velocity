@@ -21,7 +21,7 @@ export interface SearchResult {
 
 export interface AutocompleteEntry {
   value: string;
-  kind: 'script' | 'alias' | 'file';
+  kind: 'script' | 'alias' | 'file' | 'history';
 }
 
 export interface AutocompleteIndex {

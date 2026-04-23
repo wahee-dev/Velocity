@@ -160,13 +160,15 @@ export function TerminalProvider(props: { children: any }) {
       const session = cur.sessions.get(task.sessionId);
       if (!session) return;
 
-      const existingIndex = session.agentTasks.findIndex(
+      // Strip pending placeholders when real task arrives (handles race with startAgentTask)
+      const withoutPending = session.agentTasks.filter((t) => !t.id.startsWith("pending-"));
+      const existingIndex = withoutPending.findIndex(
         (t) => t.id === task.id
       );
       const agentTasks =
         existingIndex >= 0
-          ? session.agentTasks.map((t) => (t.id === task.id ? task : t))
-          : [...session.agentTasks, task];
+          ? withoutPending.map((t) => (t.id === task.id ? task : t))
+          : [...withoutPending, task];
       agentTasks.sort((a, b) => a.startedAt - b.startedAt);
 
       setState({
@@ -361,12 +363,51 @@ export function TerminalProvider(props: { children: any }) {
     prompt: string,
     cwd: string
   ): Promise<AgentTask> => {
+    // Show immediately — don't wait for backend
+    const now = Date.now();
+    const pendingTask: AgentTask = {
+      id: `pending-${now}`,
+      sessionId,
+      prompt,
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      steps: [{
+        id: `step-${now}`,
+        kind: "thinking",
+        label: "Starting...",
+        status: "running",
+        timestamp: now,
+      }],
+      changes: [],
+      canUndo: false,
+    };
+    upsertAgentTask(sessionId, pendingTask);
+
     const task = await invoke<AgentTask>("start_agent_task", {
       sessionId,
       prompt,
       cwd,
     });
-    upsertAgentTask(sessionId, task);
+
+    // Remove pending placeholder, replace with real task (only if not already added by events)
+    const s = state();
+    const session = s.sessions.get(sessionId);
+    if (session) {
+      const filtered = session.agentTasks.filter((t) => !t.id.startsWith("pending-"));
+      const alreadyExists = filtered.some((t) => t.id === task.id);
+      if (!alreadyExists) {
+        setState({
+          ...s,
+          sessions: new Map(s.sessions).set(sessionId, {
+            ...session,
+            agentTasks: [...filtered, task],
+          }),
+        });
+      }
+    } else {
+      upsertAgentTask(sessionId, task);
+    }
     return task;
   };
 

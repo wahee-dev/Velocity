@@ -1,7 +1,7 @@
 /* @solid */
 import { createSignal, createEffect } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import type { AutocompleteEntry, AutocompleteIndex, AutocompleteMatch } from "../types";
+import type { AutocompleteEntry, AutocompleteIndex, AutocompleteMatch, CommandBlock } from "../types";
 
 const EMPTY_INDEX: AutocompleteIndex = {
   cwd: "",
@@ -9,9 +9,28 @@ const EMPTY_INDEX: AutocompleteIndex = {
   entries: [],
 };
 
+const MAX_HISTORY_ENTRIES = 50;
+
+function extractHistoryEntries(blocks: CommandBlock[]): AutocompleteEntry[] {
+  const seen = new Set<string>();
+  const results: AutocompleteEntry[] = [];
+
+  // Walk backwards so most recent commands come first
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const cmd = blocks[i].command.trim();
+    if (!cmd || seen.has(cmd)) continue;
+    seen.add(cmd);
+    results.push({ value: cmd, kind: "history" });
+    if (results.length >= MAX_HISTORY_ENTRIES) break;
+  }
+
+  return results;
+}
+
 function getMatchBuckets(entries: AutocompleteEntry[], query: string): AutocompleteEntry[][] {
   const prefersFiles = query.startsWith(".") || query.includes("/") || query.includes("\\");
   if (!prefersFiles) return [entries];
+
   return [
     entries.filter((e) => e.kind === "file"),
     entries.filter((e) => e.kind !== "file"),
@@ -20,13 +39,16 @@ function getMatchBuckets(entries: AutocompleteEntry[], query: string): Autocompl
 
 function findAutocompleteMatch(
   index: AutocompleteIndex,
-  inputValue: string
+  historyEntries: AutocompleteEntry[],
+  inputValue: string,
 ): AutocompleteMatch | null {
   const leadingWhitespace = inputValue.match(/^\s*/)?.[0] ?? "";
   const query = inputValue.slice(leadingWhitespace.length);
   if (!query) return null;
 
   const normalizedQuery = query.toLowerCase();
+
+  // Check static index (files, scripts, aliases) first
   for (const bucket of getMatchBuckets(index.entries, query)) {
     for (const entry of bucket) {
       if (entry.value.length <= query.length) continue;
@@ -38,10 +60,26 @@ function findAutocompleteMatch(
       };
     }
   }
+
+  // Fall back to recent prompt history
+  for (const entry of historyEntries) {
+    if (entry.value.length <= query.length) continue;
+    if (!entry.value.toLowerCase().startsWith(normalizedQuery)) continue;
+    return {
+      value: `${leadingWhitespace}${entry.value}`,
+      completion: entry.value.slice(query.length),
+      entry,
+    };
+  }
+
   return null;
 }
 
-export function useAutocomplete(cwd: () => string, inputValue: () => string) {
+export function useAutocomplete(
+  cwd: () => string,
+  inputValue: () => string,
+  blocks: () => CommandBlock[],
+) {
   const [index, setIndex] = createSignal<AutocompleteIndex>(EMPTY_INDEX);
 
   createEffect(() => {
@@ -76,8 +114,10 @@ export function useAutocomplete(cwd: () => string, inputValue: () => string) {
     };
   });
 
-  const suggestion = () => findAutocompleteMatch(index(), inputValue());
+  const historyEntries = () => extractHistoryEntries(blocks());
+
+  const suggestion = () => findAutocompleteMatch(index(), historyEntries(), inputValue());
   const acceptSuggestion = () => suggestion()?.value ?? null;
 
-  return { index, suggestion, acceptSuggestion };
+  return { suggestion, acceptSuggestion };
 }

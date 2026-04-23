@@ -962,8 +962,78 @@ fn change_directory(
 // Builder — registers all commands + manages PTY and app state
 // ===========================================================================
 
+/// .env files compiled into the binary. Release exe works anywhere without
+/// needing a separate .env on disk.
+const EMBEDDED_ENV_ROOT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../.env"));
+const EMBEDDED_ENV_SRC_TAURI: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.env"));
+
+/// Parse an inline .env string and set any vars not already in the process env.
+fn apply_embedded_env(env_text: &str) {
+    for line in env_text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else { continue };
+
+        let key = key.trim();
+        if key.is_empty() { continue; }
+        // Only set if not already present (disk .env takes priority)
+        if std::env::var(key).is_err() {
+            let parsed = value.trim().trim_matches('"').trim_matches('\'');
+            unsafe { std::env::set_var(key, parsed); }
+        }
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Load .env from every plausible location so GROQ_API_KEY is always available.
+/// Priority: disk files first → embedded fallback last.
+fn load_env() {
+    // 1. CWD and its src-tauri sibling (dev mode: npx tauri dev runs from here)
+    let _ = dotenvy::dotenv();
+    if let Ok(cwd) = std::env::current_dir() {
+        let _ = dotenvy::from_path(cwd.join("src-tauri").join(".env"));
+        if cwd.file_name().is_some_and(|n| n == "src-tauri") {
+            if let Some(parent) = cwd.parent() {
+                let _ = dotenvy::from_path(parent.join(".env"));
+            }
+        }
+    }
+
+    // 2. Exe's own directory + project root siblings (release builds)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let _ = dotenvy::from_path(exe_dir.join(".env"));
+            if let Some(root) = exe_dir.parent() {
+                let _ = dotenvy::from_path(root.join("src-tauri").join(".env"));
+                let _ = dotenvy::from_path(root.join(".env"));
+            }
+        }
+    }
+
+    // 3. Compile-time manifest dir (source tree)
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let p = std::path::PathBuf::from(&manifest);
+        let _ = dotenvy::from_path(p.join(".env"));
+        if let Some(parent) = p.parent() {
+            let _ = dotenvy::from_path(parent.join(".env"));
+        }
+    }
+
+    // 4. Embedded fallback — compiled into binary, always works for shared exes
+    if std::env::var("GROQ_API_KEY").is_err() {
+        apply_embedded_env(EMBEDDED_ENV_SRC_TAURI);
+    }
+    if std::env::var("GROQ_API_KEY").is_err() {
+        apply_embedded_env(EMBEDDED_ENV_ROOT);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    load_env();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_mcp_bridge::init())

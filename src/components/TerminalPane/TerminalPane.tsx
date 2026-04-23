@@ -101,7 +101,7 @@ export function TerminalPane(props: TerminalPaneProps) {
   const isActive = () => session()?.isActive ?? false;
   const autocompletePath = () => session()?.path ?? "C:\\Users\\wahee\\Documents\\Code\\Big Apps\\Velocity\\velocity";
   const hasRunningAgentTask = () => agentTasks().some((task) => task.status === "running");
-  const { suggestion, acceptSuggestion } = useAutocomplete(autocompletePath, inputValue);
+  const { suggestion, acceptSuggestion } = useAutocomplete(autocompletePath, inputValue, blocks);
 
   const activeBlockMemo = createMemo<CommandBlock | null>(() => {
     const b = blocks();

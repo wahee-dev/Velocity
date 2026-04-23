@@ -517,6 +517,7 @@ fn groq_api_key() -> Result<String, String> {
 fn dotenv_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
+    // Current working directory
     if let Ok(current_dir) = std::env::current_dir() {
         candidates.push(current_dir.join(".env"));
         candidates.push(current_dir.join("src-tauri").join(".env"));
@@ -525,6 +526,27 @@ fn dotenv_candidates() -> Vec<PathBuf> {
             if let Some(parent) = current_dir.parent() {
                 candidates.push(parent.join(".env"));
             }
+        }
+    }
+
+    // Executable's directory (works for release builds)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join(".env"));
+            // exe is in target/debug/release, so check src-tauri sibling
+            if let Some(project_root) = exe_dir.parent() {
+                candidates.push(project_root.join("src-tauri").join(".env"));
+                candidates.push(project_root.join(".env"));
+            }
+        }
+    }
+
+    // Compile-time known project root
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let manifest_path = PathBuf::from(&manifest);
+        candidates.push(manifest_path.join(".env"));
+        if let Some(parent) = manifest_path.parent() {
+            candidates.push(parent.join(".env"));
         }
     }
 
