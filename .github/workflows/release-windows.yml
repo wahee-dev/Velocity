@@ -26,6 +26,10 @@ jobs:
 
       - run: bun install
 
+      - name: Create .env from .env.example
+        shell: bash
+        run: cp .env.example .env && cp .env.example src-tauri/.env
+
       - name: Build frontend
         run: bun run build
 
