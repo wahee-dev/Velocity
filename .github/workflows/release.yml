@@ -20,10 +20,6 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Update portable-ty dependencies (fixes alacritty_terminal build on macOS)
-        working-directory: src-tauri
-        run: cargo update -p alacritty_terminal -p rustix-openpty -p rustix@0.38.44
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
