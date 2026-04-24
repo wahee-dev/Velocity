@@ -36,6 +36,7 @@ jobs:
       - name: Build Tauri app (Windows)
         uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         with:
           args: --target x86_64-pc-windows-msvc

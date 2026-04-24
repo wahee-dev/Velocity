@@ -34,6 +34,10 @@ This hybrid approach gives GPU-accelerated rendering for live terminal I/O while
 - Command validation: blocks destructive patterns (`rm -rf`, `del /f`, `git reset --hard`, etc.).
 - Workspace context builder: scans file tree (depth 4, max 200 files) + package.json scripts for agent context.
 - API key resolution: searches `.env` in CWD, `src-tauri/.env`, exe directory, and `CARGO_MANIFEST_DIR`.
+- **AI utilities** (non-agent):
+  - `ai_prompt`: simple chat completion — sends user prompt + generic coding assistant system prompt to Groq, returns response text.
+  - `ai_to_command`: natural-language-to-shell converter — sends NL request with instructions to return only a Windows shell command.
+  - `predict_next_command`: terminal autocomplete engine — uses `llama-3.1-8b-instant` (~150ms) to predict the next likely command based on command history, CWD, and file listing. Returns sanitized command text.
 
 #### Input Classifier (`ai.rs` → `classify_terminal_input`)
 Determines if input should go to shell or agent:
@@ -49,7 +53,23 @@ Determines if input should go to shell or agent:
 #### App State (`lib.rs` → `AppState`)
 - Sessions, workspaces, folders, tabs, command history.
 - All managed via Tauri's `.manage(Mutex<AppState>)`.
-- ~30 Tauri commands registered across groups: window, sessions, terminal execution, workspace/folders, tabs, AI, utilities, file explorer, PTY management, state sync.
+- **35 Tauri commands registered across 13 groups**:
+
+| Group | # | Commands |
+|-------|---|----------|
+| 1 — Window Controls | 3 | `minimize_window`, `maximize_window`, `close_window` |
+| 2 — Sessions | 3 | `search_sessions`, `create_session`, `switch_session` |
+| 3 — Terminal Execution (legacy) | 2 | `execute_command` (deprecated), `cancel_command` (deprecated) |
+| 4 — Workspace & Folder Mgmt | 4 | `create_workspace`, `create_folder`, `delete_folder`, `rename_folder` |
+| 5 — Tab Management | 3 | `open_tab`, `close_tab`, `switch_tab` |
+| 6 — AI Features | 7 | `ai_prompt`, `ai_to_command`, `classify_terminal_input`, `predict_next_command`, `start_agent_task`, `revert_agent_task`, `respond_agent_confirmation` |
+| 7 — Clipboard & Utilities | 4 | `copy_to_clipboard`, `clear_history`, `open_settings`, `get_system_info` |
+| 8 — Pane Controls | 1 | `close_pane` |
+| 9 — File Explorer | 3 | `read_dir`, `get_git_status`, `open_file` |
+| 9.5 — File Search | 1 | `search_files` |
+| 9.75 — Autocomplete | 1 | `build_autocomplete_index` |
+| 10 — PTY Multi-Session Manager | 6 | `spawn_pty`, `write_to_pty`, `resize_pty`, `kill_pty`, `list_ptys`, `get_session_metrics` |
+| 11 — State Sync | 2 | `get_cwd`, `change_directory` |
 
 ### B. Frontend (`src/`)
 
@@ -65,9 +85,12 @@ Main orchestrator (~719 lines):
 - Spawns PTY on mount via `spawn_pty` command.
 - Listens to `pty://output`, `pty://closed`, `cwd-changed` events.
 - Routes input through classification: shell commands go to PTY, agent prompts go to `startAgentTask`.
+- **Calls `invoke()` directly** — does NOT use `useTauri.ts` bridge layer (see note below).
 - Manages active block lifecycle: creates running block → writes to PTY with exit marker wrapping → captures output via `OutputCapture` hook → detects prompt return via `PromptDetector` → finalizes block with status/duration/exit code.
 - Ctrl+C sends `\x03` to PTY, marks block as "interrupted" after 300ms grace period.
 - Health polling every 30s for session metrics (uptime, bytes read, idle detection).
+
+> **Architectural Note — IPC Bridge Inconsistency**: `src/hooks/useTauri.ts` provides a typed IPC wrapper used by TitleBar, SessionsSidebar, and FileExplorer. However, **TerminalPane bypasses it entirely**, calling `invoke()` directly for all PTY and agent operations. This means there are two parallel IPC paths: the typed bridge (used by chrome/UI components) and direct invoke (used by the terminal core). The `handleExecuteCommand` / `handleCancelCommand` wrappers in `useTauri.ts` wrap the deprecated legacy `execute_command` / `cancel_command` Rust commands that nothing consumes.
 
 #### Block View (`components/BlockView/BlockView.tsx`)
 Renders the scrollable block list:
@@ -136,12 +159,23 @@ User Input
 ## 3. Data Model
 
 ### CommandBlock (Terminal Blocks)
+
+**Two shapes exist — Rust struct is a legacy subset; the full model lives entirely on the frontend:**
+
+**Rust shape** (`lib.rs:65-73`) — used only by deprecated `execute_command` path:
+```
+id, command, output?, status (Input|Running|Success|Error), timestamp
+```
+Note: No `Interrupted` variant in Rust's `CommandStatus` enum (`lib.rs:77-82`).
+
+**TypeScript shape** (`types/index.ts:100-129`) — the real model used everywhere:
 ```
 id, command, htmlOutput?, rawOutput?, isTruncated,
 lineCount, outputSizeBytes, status (input|running|success|error|interrupted),
 timestamp, startedAt?, finishedAt?, durationMs?, exitCode?,
 compacted?, compactedCount?
 ```
+The block lifecycle (status transitions, timing, truncation) is managed entirely on the frontend by `TerminalPane` + `useOutputCapture`. Rust never sees these fields.
 
 ### AgentTask (Agent Blocks)
 ```
@@ -166,10 +200,10 @@ inputValue, showWelcome, isActive, gitStatus: { branch, changes }
 | Component | Status | Description |
 |-----------|--------|-------------|
 | **Agent Card** | IMPLEMENTED | Rich card with pulse indicator, step timeline, file changes list, undo button |
-| **Interactive Diff** | NOT BUILT | Planned: syntax-highlighted diff with Accept/Reject |
-| **Action Confirmation** | PARTIAL | Server-side: `validate_agent_command()` blocks destructive patterns. No client-side confirmation dialog yet |
-| **Knowledge Toast** | NOT BUILT | Planned: error popover with docs/fix suggestions |
-| **Ghost Command** | NOT BUILT | Planned: agent-proposed command with Tab-to-accept into PTY |
+| **Interactive Diff** | IMPLEMENTED | Syntax-highlighted unified diff viewer in AgentBlock |
+| **Action Confirmation** | IMPLEMENTED | Server-side blocks destructive patterns + client-side confirmation dialog via `agent://confirm` event |
+| **Knowledge Toast** | IMPLEMENTED | Error popover with docs/fix suggestions |
+| **Ghost Command** | IMPLEMENTED | AI-predicted next command via Groq (`llama-3.1-8b-instant`), blue ghost text with Tab/ArrowRight to accept |
 
 ---
 
@@ -217,8 +251,9 @@ When block count exceeds threshold (default 20), older completed blocks (success
 ```
 src-tauri/src/
   main.rs          → Entry point
-  lib.rs           → AppState, all Tauri commands (~1027 lines), plugin registration
+  lib.rs           → AppState, all Tauri commands (~1097 lines), plugin registration
   pty.rs           → PtyManager: spawn, write, resize, kill, metrics, OSC7 CWD tracking
+  ai.rs            → AgentManager, AI tools, Groq API client, input classifier (~1483 lines)
   src/
     components/
       TerminalPane/
@@ -238,8 +273,12 @@ src-tauri/src/
       TerminalContext.tsx     → Central state provider, optimistic UI, block GC
     hooks/
       useAutocomplete.ts      → Fuzzy autocomplete with file/script/alias index
+      useAutocompleteV2.ts    → Warp-style autocomplete with context engine + fuzzy matcher
+      useGhostCommand.ts      → AI-predicted next command (Groq) with ghost text display
       useOutputCapture.ts     → PTY output capture pipeline
+      useTauri.ts             → Typed IPC bridge (used by UI chrome, NOT by TerminalPane)
     utils/
       exitMarker.ts           → Exit marker wrap/parse for block finalization
       promptDetector.ts       → Shell prompt detection for block completion
     types/index.ts            → All TypeScript interfaces
+```

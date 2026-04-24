@@ -229,6 +229,18 @@
   color: var(--text-muted);
 }
 
+/* ── AI Ghost Command (blue-ish, pulsed) ── */
+.command-ghost-ai .command-ghost-completion {
+  color: #7aa2f7;
+  opacity: 0.45;
+  animation: ghost-pulse 2s ease-in-out 2;
+}
+
+@keyframes ghost-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.65; }
+}
+
 .command-input {
   width: 100%;
   position: relative;

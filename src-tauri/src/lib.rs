@@ -12,7 +12,9 @@ pub use ai::{
     ai_prompt,
     ai_to_command,
     classify_terminal_input,
+    predict_next_command,
     revert_agent_task,
+    respond_agent_confirmation,
     start_agent_task,
     AgentManager,
 };
@@ -281,10 +283,15 @@ fn switch_session(
 }
 
 // ===========================================================================
-// GROUP 3 — Terminal Execution (TerminalPane.tsx)
+// GROUP 3 — Terminal Execution (TerminalPane.tsx) — DEPRECATED
+// These run non-interactive cmd /C via tokio. The real execution path is
+// TerminalPane → classify_terminal_input → write_to_pty/start_agent_task.
+// Nothing listens to the command-start/command-finish events these emit.
+// Kept for backward compat only; will be removed in a future version.
 // ===========================================================================
 
 #[tauri::command]
+#[deprecated = "Legacy non-interactive executor. Use PTY path via write_to_pty instead."]
 async fn execute_command(
     command: &str,
     app: tauri::AppHandle,
@@ -337,6 +344,7 @@ async fn execute_command(
 }
 
 #[tauri::command]
+#[deprecated = "Legacy command killer. Use kill_pty instead."]
 fn cancel_command(
     block_id: &str,
     pty: tauri::State<'_, Mutex<PtyManager>>,
@@ -569,6 +577,71 @@ fn read_dir(path: String) -> Result<Vec<FileNode>, String> {
     });
 
     Ok(nodes)
+}
+
+/// Get available system commands by scanning PATH directories.
+/// Results are cached after first call.
+#[tauri::command]
+fn get_system_commands() -> Result<Vec<String>, String> {
+    use std::sync::{OnceLock, Mutex};
+
+    static CACHE: OnceLock<Mutex<Option<Vec<String>>>> = OnceLock::new();
+
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    if let Some(ref cmds) = *guard {
+        return Ok(cmds.clone());
+    }
+
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut cmds = Vec::new();
+
+    // Platform-specific path separator and executable detection
+    #[cfg(target_os = "windows")]
+    let path_sep = ';';
+    #[cfg(not(target_os = "windows"))]
+    let path_sep = ':';
+
+    #[cfg(target_os = "windows")]
+    let exts: &[&str] = &[".exe", ".cmd", ".bat", ".com", ".ps1"];
+
+    for dir_str in path_var.split(path_sep) {
+        let dir = Path::new(dir_str.trim());
+        if !dir.is_dir() { continue; }
+
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || name.contains(' ') { continue; }
+
+                let is_executable = if cfg!(target_os = "windows") {
+                    let lower = name.to_lowercase();
+                    exts.iter().any(|e| lower.ends_with(e) || (!lower.contains('.') && lower.len() > 1))
+                } else {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        entry.metadata()
+                            .ok()
+                            .map(|m| m.permissions().mode() & 0o111 != 0)
+                            .unwrap_or(false)
+                    }
+                    #[cfg(not(unix))]
+                    { true }
+                };
+
+                if is_executable && seen.insert(name.clone()) {
+                    cmds.push(name);
+                }
+            }
+        }
+    }
+
+    cmds.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    *guard = Some(cmds.clone());
+    Ok(cmds)
 }
 
 /// Get git status (branch + changed file count) for a directory.
@@ -1065,8 +1138,10 @@ pub fn run() {
             ai_prompt,
             ai_to_command,
             classify_terminal_input,
+            predict_next_command,
             start_agent_task,
             revert_agent_task,
+            respond_agent_confirmation,
             // Utilities
             copy_to_clipboard,
             clear_history,
@@ -1077,6 +1152,7 @@ pub fn run() {
             // File explorer
             open_file,
             read_dir,
+            get_system_commands,
             get_git_status,
             search_files,
             build_autocomplete_index,

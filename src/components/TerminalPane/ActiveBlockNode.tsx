@@ -140,7 +140,6 @@ export function ActiveBlockNode(props: ActiveBlockNodeProps) {
 
   return (
     <div class="active-block">
-      <div class="active-block-label">live output</div>
       <div class="active-block-terminal" ref={containerRef!} />
     </div>
   );

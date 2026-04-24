@@ -8,11 +8,15 @@ import { TerminalProvider, useTerminalContext } from "./context/TerminalContext"
 import { invoke } from "@tauri-apps/api/core";
 import type { Workspace } from "./types";
 
-const DEFAULT_PATH =
-  "C:\\Users\\wahee\\Documents\\Code\\Big Apps\\Velocity\\velocity";
+const DEFAULT_PATH = "";
 
 function expandPath(path: string): string {
-  if (path.startsWith("~")) return path.replace("~", "C:\\Users\\wahee");
+  if (path.startsWith("~")) {
+    const home = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
+      ? "" // Tauri can resolve this natively; keep as-is for now
+      : "";
+    return path.replace("~", home || "");
+  }
   return path;
 }
 

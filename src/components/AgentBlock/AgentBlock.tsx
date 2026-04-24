@@ -3,13 +3,18 @@ import {
   AlertTriangle,
   Brain,
   CheckCircle2,
+  ChevronRight,
   FilePenLine,
   FileSearch,
   RotateCcw,
+  ShieldAlert,
   TerminalSquare,
+  X,
 } from "lucide-solid";
-import { Show } from "solid-js";
+import { Show, createSignal } from "solid-js";
+import { useTerminalContext } from "../../context/TerminalContext";
 import type { AgentTask, AgentTaskStep } from "../../types";
+import { DiffViewer } from "./DiffViewer";
 import "./AgentBlock.css";
 
 function statusLabel(task: AgentTask): string {
@@ -41,8 +46,38 @@ interface AgentBlockProps {
 }
 
 export function AgentBlock({ task, onUndo }: AgentBlockProps) {
+  const { pendingConfirmation, respondConfirmation } = useTerminalContext();
   const recentSteps = [...task.steps].slice(-4).reverse();
   const latestStep = recentSteps[0];
+  const [responded, setResponded] = createSignal(false);
+  const [expandedFiles, setExpandedFiles] = createSignal<Set<string>>(new Set());
+
+  function toggleFileExpand(path: string) {
+    setExpandedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }
+
+  // Find the confirmation step (awaiting_confirmation status)
+  const confirmStep = () => task.steps.find((s) => s.status === "awaiting_confirmation");
+  const confirmation = () => {
+    if (!confirmStep()) return undefined;
+    // Try to match by taskId pattern: confirm-{taskId}-{timestamp}
+    for (const [key, value] of Object.entries(pendingConfirmation ?? {})) {
+      if (key.startsWith(`confirm-${task.id}`)) return value;
+    }
+    return undefined;
+  };
+
+  async function handleRespond(allowed: boolean) {
+    setResponded(true);
+    const conf = confirmation();
+    if (conf) {
+      await respondConfirmation(conf.taskId, allowed);
+    }
+  }
 
   return (
     <article
@@ -62,6 +97,42 @@ export function AgentBlock({ task, onUndo }: AgentBlockProps) {
 
       <p class="agent-block-prompt">{task.prompt}</p>
 
+      {/* Confirmation Card */}
+      <Show when={confirmStep() && !responded()}>
+        <div class="agent-confirmation-card">
+          <div class="agent-confirmation-header">
+            <ShieldAlert size={16} />
+            <span>Confirmation Required</span>
+          </div>
+          <Show when={confirmation()}>
+            {(conf) => (
+              <>
+                <code class="agent-confirmation-command">{conf().command}</code>
+                <p class="agent-confirmation-reason">{conf().reason}</p>
+              </>
+            )}
+          </Show>
+          <div class="agent-confirmation-actions">
+            <button
+              type="button"
+              class="agent-confirm-deny"
+              onClick={() => handleRespond(false)}
+            >
+              <X size={14} />
+              <span>Deny</span>
+            </button>
+            <button
+              type="button"
+              class="agent-confirm-allow"
+              onClick={() => handleRespond(true)}
+            >
+              <CheckCircle2 size={14} />
+              <span>Allow</span>
+            </button>
+          </div>
+        </div>
+      </Show>
+
       <Show when={!!(task.summary || task.error)}>
         <div
           class={`agent-block-summary ${task.error ? "has-error" : ""}`}
@@ -71,7 +142,7 @@ export function AgentBlock({ task, onUndo }: AgentBlockProps) {
         </div>
       </Show>
 
-      <Show when={!!latestStep}>
+      <Show when={!!latestStep && (!confirmStep() || responded())}>
         <div class="agent-block-current-step">
           <span class="agent-block-section-label">Current</span>
           <div class="agent-step-row is-current">
@@ -109,18 +180,31 @@ export function AgentBlock({ task, onUndo }: AgentBlockProps) {
         <div class="agent-block-files">
           <span class="agent-block-section-label">Changed files</span>
           <div class="agent-file-list">
-            {task.changes.map((change) => (
-              <div key={change.path} class="agent-file-row">
-                <div class="agent-file-copy">
-                  <span class="agent-file-path">{change.path}</span>
-                  <span class="agent-file-summary">{change.summary}</span>
+            {task.changes.map((change) => {
+              const isExpanded = () => expandedFiles().has(change.path);
+              return (
+                <div key={change.path} class="agent-file-row-expandable">
+                  <button
+                    type="button"
+                    class="agent-file-toggle"
+                    onClick={() => toggleFileExpand(change.path)}
+                  >
+                    {isExpanded() ? <ChevronRight size={12} style={{ transform: "rotate(90deg)" }} /> : <ChevronRight size={12} />}
+                    <div class="agent-file-copy">
+                      <span class="agent-file-path">{change.path}</span>
+                      <span class="agent-file-summary">{change.summary}</span>
+                    </div>
+                    <div class="agent-file-stats">
+                      <span class="agent-file-added">+{change.addedLines}</span>
+                      <span class="agent-file-removed">-{change.removedLines}</span>
+                    </div>
+                  </button>
+                  <Show when={isExpanded() && change.diff}>
+                    <DiffViewer diff={change.diff!} />
+                  </Show>
                 </div>
-                <div class="agent-file-stats">
-                  <span class="agent-file-added">+{change.addedLines}</span>
-                  <span class="agent-file-removed">-{change.removedLines}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </Show>

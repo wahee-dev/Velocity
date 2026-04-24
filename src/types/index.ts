@@ -45,7 +45,7 @@ export interface TerminalInputIntent {
 
 export type AgentTaskStatus = 'running' | 'completed' | 'error' | 'reverted';
 export type AgentStepKind = 'thinking' | 'read_file' | 'write_file' | 'execute_command' | 'complete' | 'revert';
-export type AgentStepStatus = 'running' | 'completed' | 'error';
+export type AgentStepStatus = 'running' | 'completed' | 'error' | 'awaiting_confirmation';
 export type AgentFileChangeKind = 'created' | 'modified';
 
 export interface AgentTaskStep {
@@ -64,6 +64,7 @@ export interface AgentFileChange {
   addedLines: number;
   removedLines: number;
   reverted: boolean;
+  diff?: string;
 }
 
 export interface AgentTask {
@@ -157,6 +158,71 @@ export interface SessionHealthMetrics {
 export interface GitStatus {
   branch: string;
   changes: number;
+}
+
+// ── Autocomplete V2 types ──
+
+export interface FlagSpec {
+  name: string;
+  short?: string;
+  description: string;
+  takesValue?: boolean;
+  repeatable?: boolean;
+}
+
+export interface ArgSpec {
+  name: string;
+  template?: 'file' | 'folder' | 'command';
+  suggestions?: string[];
+}
+
+export interface SubcommandSpec {
+  name: string;
+  description: string;
+  flags?: FlagSpec[];
+  args?: ArgSpec[];
+  subcommands?: SubcommandSpec[];
+}
+
+export interface CommandSpec {
+  name: string;
+  description: string;
+  flags?: FlagSpec[];
+  args?: ArgSpec[];
+  subcommands?: SubcommandSpec[];
+}
+
+export type TokenType = 'command' | 'subcommand' | 'flag' | 'arg' | 'unknown';
+
+export interface ParsedToken {
+  value: string;
+  type: TokenType;
+  index: number;
+  isPartial: boolean;
+}
+
+export interface ParseResult {
+  tokens: ParsedToken[];
+  command: CommandSpec | null;
+  activeSubcommand: SubcommandSpec | null;
+  currentToken: ParsedToken | null;
+  currentArgSpec: ArgSpec | null;
+  rawInput: string;
+  query: string;
+}
+
+export interface Suggestion {
+  display: string;
+  value: string;
+  description?: string;
+  icon?: string;
+  type: 'command' | 'subcommand' | 'flag' | 'arg' | 'file' | 'history';
+  matchedIndices?: number[];
+}
+
+export interface FuzzyResult {
+  score: number;
+  matches: number[];
 }
 
 export interface TerminalSession {

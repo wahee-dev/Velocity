@@ -131,6 +131,7 @@ pub enum AgentStepStatus {
     Running,
     Completed,
     Error,
+    AwaitingConfirmation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +143,8 @@ pub struct AgentFileChange {
     pub added_lines: usize,
     pub removed_lines: usize,
     pub reverted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +174,7 @@ pub struct AgentManager {
     client: reqwest::Client,
     tasks: HashMap<String, AgentTaskRecord>,
     backups_root: PathBuf,
+    pending_confirmations: HashMap<String, tokio::sync::oneshot::Sender<bool>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +250,7 @@ impl AgentManager {
             client,
             tasks: HashMap::new(),
             backups_root,
+            pending_confirmations: HashMap::new(),
         }
     }
 
@@ -478,6 +483,27 @@ pub fn revert_agent_task(
 }
 
 #[tauri::command]
+pub fn respond_agent_confirmation(
+    task_id: String,
+    allowed: bool,
+    agent_state: tauri::State<'_, Arc<Mutex<AgentManager>>>,
+) -> Result<(), String> {
+    let mut guard = agent_state.lock().map_err(|e| e.to_string())?;
+    if let Some(tx) = guard.pending_confirmations.remove(&task_id) {
+        let _ = tx.send(allowed);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfirmationRequest {
+    pub task_id: String,
+    pub command: String,
+    pub reason: String,
+}
+
+#[tauri::command]
 pub async fn ai_prompt(prompt: String) -> Result<String, String> {
     let response = run_simple_completion(
         "You are Velocity Agent. Respond like a concise coding assistant.",
@@ -494,7 +520,90 @@ pub async fn ai_to_command(natural_language: String) -> Result<String, String> {
     Ok(response.trim().to_string())
 }
 
+#[tauri::command]
+pub async fn predict_next_command(
+    history: Vec<String>,
+    cwd: String,
+    ls_snapshot: String,
+) -> Result<String, String> {
+    let api_key = groq_api_key()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build reqwest client: {}", e))?;
+
+    let user_content = format!(
+        "Files: {} | CWD: {} | History: {} | Suggest next command:",
+        ls_snapshot,
+        cwd,
+        history.join(", "),
+    );
+
+    let messages = vec![
+        GroqChatMessage {
+            role: "system".to_string(),
+            content: "You are a terminal autocomplete engine. Suggest only the single most likely next shell command based on history and files. Output only the command. No prose. No markdown.".to_string(),
+        },
+        GroqChatMessage {
+            role: "user".to_string(),
+            content: user_content,
+        },
+    ];
+
+    // Use llama-3.1-8b-instant for fast predictions (~100-200ms)
+    let request = GroqChatRequest {
+        model: "llama-3.1-8b-instant",
+        temperature: 0.1,
+        messages,
+    };
+
+    let response = client
+        .post(GROQ_API_URL)
+        .bearer_auth(&api_key)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach Groq: {}", e))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read Groq response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("Groq returned {}: {}", status, body));
+    }
+
+    let parsed: GroqChatResponse = serde_json::from_str(&body)
+        .map_err(|e| format!("Failed to parse Groq response: {}", e))?;
+
+    parsed
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .map(|content| {
+            // Strip common wrappers (backticks, quotes, $ prefix)
+            content
+                .trim()
+                .trim_start_matches("```")
+                .trim_start_matches('`')
+                .trim_start_matches('$')
+                .trim_start_matches(' ')
+                .trim_end_matches("```")
+                .trim_end_matches('`')
+                .trim()
+                .to_string()
+        })
+        .filter(|content| !content.is_empty())
+        .ok_or_else(|| "Groq did not return any content".to_string())
+}
+
+const COMPILE_TIME_GROQ_KEY: Option<&'static str> = option_env!("GROQ_API_KEY");
+
 fn groq_api_key() -> Result<String, String> {
+    // 1. Check runtime environment variable (overrides baked-in key)
     if let Ok(value) = std::env::var(GROQ_API_KEY_ENV) {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
@@ -502,6 +611,15 @@ fn groq_api_key() -> Result<String, String> {
         }
     }
 
+    // 2. Check compile-time baked key (from GitHub Secrets/Build env)
+    if let Some(key) = COMPILE_TIME_GROQ_KEY {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    // 3. Check .env files (for local development)
     for candidate in dotenv_candidates() {
         if let Some(value) = read_dotenv_var(&candidate, GROQ_API_KEY_ENV)? {
             let trimmed = value.trim();
@@ -511,7 +629,7 @@ fn groq_api_key() -> Result<String, String> {
         }
     }
 
-    Err("GROQ_API_KEY is not set. Add it to .env or src-tauri/.env".to_string())
+    Err("GROQ_API_KEY is not set. It must be provided at compile-time via environment variable, or at runtime via .env file.".to_string())
 }
 
 fn dotenv_candidates() -> Vec<PathBuf> {
@@ -755,7 +873,60 @@ async fn execute_tool_call(
             Ok(summary)
         }
         AgentToolCall::ExecuteCommand { command, .. } => {
-            validate_agent_command(command)?;
+            // Check if command is risky and needs user confirmation
+            if let Some(reason) = is_risky_command(command) {
+                let confirm_id = format!("confirm-{}-{}", task_id, now_millis());
+
+                // Update step status to awaiting_confirmation
+                update_task(manager, task_id, app, |record| {
+                    if let Some(step) = record.snapshot.steps.iter_mut().rev()
+                        .find(|s| matches!(s.status, AgentStepStatus::Running))
+                    {
+                        step.status = AgentStepStatus::AwaitingConfirmation;
+                        step.detail = Some(format!("Awaiting confirmation: {}", reason));
+                    }
+                    Ok(())
+                })?;
+
+                // Emit confirmation request to frontend
+                let _ = app.emit("agent://confirm", AgentConfirmationRequest {
+                    task_id: confirm_id.clone(),
+                    command: command.clone(),
+                    reason,
+                });
+
+                // Create oneshot channel and wait for frontend response
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                {
+                    let mut guard = manager.lock().map_err(|e| e.to_string())?;
+                    guard.pending_confirmations.insert(confirm_id.clone(), tx);
+                }
+
+                let allowed = rx.await.map_err(|e| format!("Confirmation channel closed: {}", e))?;
+
+                // Update step back to running or mark as skipped
+                if !allowed {
+                    update_task(manager, task_id, app, |record| {
+                        finish_running_step(record, AgentStepStatus::Completed, None);
+                        Ok(())
+                    })?;
+                    return Ok("Command skipped by user.".to_string());
+                }
+
+                // User approved — proceed with execution
+                update_task(manager, task_id, app, |record| {
+                    if let Some(step) = record.snapshot.steps.iter_mut().rev()
+                        .find(|s| matches!(s.status, AgentStepStatus::AwaitingConfirmation))
+                    {
+                        step.status = AgentStepStatus::Running;
+                        step.detail = None;
+                    }
+                    Ok(())
+                })?;
+            } else {
+                validate_agent_command(command)?;
+            }
+
             let cwd = {
                 let guard = manager.lock().map_err(|e| e.to_string())?;
                 let record = guard
@@ -840,6 +1011,7 @@ fn write_agent_file(
     };
 
     let (added_lines, removed_lines) = summarize_line_delta(&original_content, content);
+    let diff = compute_unified_diff(&backup_record.display_path, &original_content, content);
     let change_kind = if backup_record.original_exists {
         AgentFileChangeKind::Modified
     } else {
@@ -867,6 +1039,7 @@ fn write_agent_file(
         change.added_lines = added_lines;
         change.removed_lines = removed_lines;
         change.reverted = false;
+        change.diff = Some(diff.clone());
     } else {
         record.snapshot.changes.push(AgentFileChange {
             path: backup_record.display_path.clone(),
@@ -875,6 +1048,7 @@ fn write_agent_file(
             added_lines,
             removed_lines,
             reverted: false,
+            diff: Some(diff),
         });
     }
 
@@ -1126,6 +1300,76 @@ fn display_path(root: &Path, target: &Path) -> String {
         .strip_prefix(root)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| target.to_string_lossy().replace('\\', "/"))
+}
+
+fn compute_unified_diff(file_path: &str, old_content: &str, new_content: &str) -> String {
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+
+    // Compute LCS-based diff
+    let mut result = String::new();
+    result.push_str(&format!("--- a{}\n", file_path));
+    result.push_str(&format!("+++ b{}\n", file_path));
+
+    // Simple line-by-line diff using prefix/suffix matching (same as summarize_line_delta)
+    let mut prefix = 0usize;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut old_suffix = old_lines.len();
+    let mut new_suffix = new_lines.len();
+    while old_suffix > prefix
+        && new_suffix > prefix
+        && old_lines[old_suffix - 1] == new_lines[new_suffix - 1]
+    {
+        old_suffix -= 1;
+        new_suffix -= 1;
+    }
+
+    let old_range = (prefix + 1)..=(old_suffix);
+    let new_range = (prefix + 1)..=(new_suffix);
+
+    result.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        old_range.start(),
+        old_range.end() - old_range.start() + 1,
+        new_range.start(),
+        new_range.end() - new_range.start() + 1
+    ));
+
+    // Output unchanged context before diff region
+    for i in 0..prefix {
+        result.push(' ');
+        result.push_str(old_lines[i]);
+        result.push('\n');
+    }
+
+    // Output removed lines (old only)
+    for i in prefix..old_suffix {
+        result.push('-');
+        result.push_str(old_lines[i]);
+        result.push('\n');
+    }
+
+    // Output added lines (new only)
+    for i in prefix..new_suffix {
+        result.push('+');
+        result.push_str(new_lines[i]);
+        result.push('\n');
+    }
+
+    // Output unchanged context after diff region
+    for i in new_suffix..new_lines.len() {
+        result.push(' ');
+        result.push_str(new_lines[i]);
+        result.push('\n');
+    }
+
+    result
 }
 
 fn summarize_line_delta(old_content: &str, new_content: &str) -> (usize, usize) {
@@ -1452,15 +1696,26 @@ async fn run_shell_command(cwd: &Path, command: &str) -> Result<String, String> 
 }
 
 fn validate_agent_command(command: &str) -> Result<(), String> {
+    // Hard-blocked patterns that are never allowed (even with confirmation)
     let lower = command.to_lowercase();
-    if BLOCKED_COMMAND_PATTERNS
-        .iter()
-        .any(|pattern| lower.contains(pattern))
-    {
-        return Err(format!("Refusing to run destructive command: {}", command));
+    for pattern in ["format ", "mkfs", "shutdown"] {
+        if lower.contains(pattern) {
+            return Err(format!("Refusing to run destructive command: {}", command));
+        }
     }
-
     Ok(())
+}
+
+/// Returns Some(reason) if a command is risky and should trigger user confirmation.
+/// Returns None if the command is safe.
+fn is_risky_command(command: &str) -> Option<String> {
+    let lower = command.to_lowercase();
+    for pattern in BLOCKED_COMMAND_PATTERNS.iter() {
+        if lower.contains(pattern) {
+            return Some(format!("Matches blocked pattern: {}", pattern));
+        }
+    }
+    None
 }
 
 fn emit_task_update(app: &AppHandle, snapshot: &AgentTaskSnapshot) {

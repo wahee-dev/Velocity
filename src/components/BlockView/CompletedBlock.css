@@ -1,9 +1,11 @@
+/* ── Completed command block — minimal: command + output + faint separator ── */
+
 .block-view .command-block {
   position: relative;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  padding: 6px 0 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 8px 0 10px;
 }
 
 .block-view .command-block:first-child {
@@ -20,13 +22,15 @@
   font-size: 11px;
 }
 
+/* ── Command line — clean, minimal ── */
+
 .block-view .block-command {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   min-width: 0;
-  padding: 2px 0;
+  padding: 1px 0 4px;
   background: transparent;
   border: none;
   text-align: left;
@@ -37,46 +41,21 @@
   color: #ffffff;
 }
 
-.block-status-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  flex-shrink: 0;
-  background: #64748b;
-}
-
-.block-status-indicator.status-success {
-  background: #22c55e;
-}
-
-.block-status-indicator.status-error {
-  background: #ef4444;
-}
-
-.block-status-indicator.status-interrupted {
-  background: #f59e0b;
-}
-
-.block-view .prompt-symbol {
-  color: #4ade80;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-
 .block-view .command-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-secondary);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 12px;
 }
 
+/* ── Output area ── */
+
 .block-output {
-  padding: 8px 0;
-  color: #a1a1aa;
+  padding: 6px 0 2px;
+  color: #888;
   font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.5;
@@ -126,17 +105,25 @@
   overflow-x: auto;
 }
 
-.block-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 10px;
-  padding-top: 2px;
+/* ── Knowledge Toast Toggle (error blocks only) ── */
+
+.knowledge-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 4px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(234, 179, 8, 0.2);
+  background: rgba(234, 179, 8, 0.06);
+  color: #fbbf24;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.block-meta span {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
+.knowledge-toggle:hover {
+  background: rgba(234, 179, 8, 0.14);
+  border-color: rgba(234, 179, 8, 0.35);
 }

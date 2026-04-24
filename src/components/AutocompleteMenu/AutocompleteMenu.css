@@ -1,0 +1,104 @@
+/* ── Floating Autocomplete Menu ── */
+
+.autocomplete-menu {
+  position: fixed;
+  z-index: 900;
+  min-width: 320px;
+  max-width: 560px;
+  max-height: 280px;
+  background: var(--bg-secondary, #1a1a2e);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  overflow-y: auto;
+  font-family: var(--font-mono, 'JetBrains Mono', 'Cascadia Code', monospace);
+  font-size: 13px;
+  padding: 4px 0;
+  animation: autocomplete-menu-in 0.12s ease-out;
+}
+
+@keyframes autocomplete-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.autocomplete-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  cursor: pointer;
+  color: var(--text-primary, #e0e0e0);
+  transition: background 0.08s;
+  user-select: none;
+}
+
+.autocomplete-menu__item:hover,
+.autocomplete-menu__item--selected {
+  background: var(--bg-selected, rgba(255, 107, 53, 0.12));
+}
+
+.autocomplete-menu__item--selected {
+  background: var(--bg-selected, rgba(255, 107, 53, 0.15));
+}
+
+.autocomplete-menu__icon {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.autocomplete-menu__text {
+  flex-shrink: 0;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 80px;
+}
+
+.autocomplete-menu__desc {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+.autocomplete-menu__highlight {
+  background: var(--accent-orange, #ff6b35);
+  color: #000;
+  border-radius: 2px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+
+/* Scrollbar styling */
+.autocomplete-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.autocomplete-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.autocomplete-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.autocomplete-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}

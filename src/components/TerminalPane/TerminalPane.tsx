@@ -19,7 +19,9 @@ import { AgentBlock } from "../AgentBlock/AgentBlock";
 import { BlockView } from "../BlockView/BlockView";
 import { ActiveBlockNode } from "./ActiveBlockNode";
 import { useTerminalContext } from "../../context/TerminalContext";
-import { useAutocomplete } from "../../hooks/useAutocomplete";
+import { useAutocompleteV2 } from "../../hooks/useAutocompleteV2";
+import { useGhostCommand } from "../../hooks/useGhostCommand";
+import { AutocompleteMenu } from "../AutocompleteMenu/AutocompleteMenu";
 import { createOutputCapture } from "../../hooks/useOutputCapture";
 import {
   consumeExitMarkerChunk,
@@ -99,9 +101,49 @@ export function TerminalPane(props: TerminalPaneProps) {
   const inputValue = () => session()?.inputValue ?? "";
   const gitStatus = () => session()?.gitStatus ?? { branch: "main", changes: 0 };
   const isActive = () => session()?.isActive ?? false;
-  const autocompletePath = () => session()?.path ?? "C:\\Users\\wahee\\Documents\\Code\\Big Apps\\Velocity\\velocity";
+  const autocompletePath = () => session()?.path ?? "";
   const hasRunningAgentTask = () => agentTasks().some((task) => task.status === "running");
-  const { suggestion, acceptSuggestion } = useAutocomplete(autocompletePath, inputValue, blocks);
+  const [cursorPos, setCursorPos] = createSignal(0);
+  const autocompleteV2 = useAutocompleteV2(autocompletePath, inputValue, cursorPos, blocks);
+  const ghostCmd = useGhostCommand(() => props.sessionId, autocompletePath, blocks);
+
+  // Register input element for menu positioning
+  onMount(() => {
+    // Will be set when inputRef is available
+  });
+  createEffect(() => {
+    // Keep input element registered
+    if (inputRef) {
+      autocompleteV2.registerInputElement(inputRef);
+    }
+  });
+
+  // Idle prediction: show ghost text after 150ms of empty, idle prompt
+  let idlePredictionTimer: ReturnType<typeof setTimeout> | null = null;
+  createEffect(() => {
+    const input = inputValue();
+    const running = hasRunningCommand();
+    const existingGhost = autocompleteV2.ghostText();
+
+    // Only predict when: input empty, no running command, no existing ghost text
+    if (!input.trim() && !running && !existingGhost) {
+      if (idlePredictionTimer) clearTimeout(idlePredictionTimer);
+      idlePredictionTimer = setTimeout(() => {
+        // Re-check conditions haven't changed
+        if (!inputValue().trim() && !hasRunningCommand() && !autocompleteV2.ghostText()) {
+          const recentCommands = blocks()
+            .filter((b) => b.command && b.status === "success")
+            .slice(-5)
+            .map((b) => b.command!);
+          void autocompleteV2.triggerPrediction(recentCommands, autocompletePath());
+        }
+      }, 150);
+    }
+
+    onCleanup(() => {
+      if (idlePredictionTimer) clearTimeout(idlePredictionTimer);
+    });
+  });
 
   const activeBlockMemo = createMemo<CommandBlock | null>(() => {
     const b = blocks();
@@ -113,7 +155,7 @@ export function TerminalPane(props: TerminalPaneProps) {
 
   const hasRunningCommand = () => activeBlockMemo() !== null;
   const visibleAgentTasks = () => agentTasks().slice(-3).reverse();
-  const fullDisplayPath = () => session()?.path ?? "C:\\Users\\wahee\\Documents\\Code\\Big Apps\\Velocity\\velocity";
+  const fullDisplayPath = () => session()?.path ?? "";
 
   // Sync active block ref
   createEffect(() => { activeBlock = activeBlockMemo(); });
@@ -157,6 +199,16 @@ export function TerminalPane(props: TerminalPaneProps) {
     });
 
     requestAnimationFrame(() => inputRef?.focus());
+
+    // Trigger next-command prediction on successful exit
+    if ((status === "success" || ec === 0) && !inputValue().trim()) {
+      const recentCommands = blocks()
+        .filter((b) => b.command && b.status === "success")
+        .slice(-5)
+        .map((b) => b.command!);
+      void autocompleteV2.triggerPrediction(recentCommands, autocompletePath());
+      ghostCmd.triggerPrediction();
+    }
   }
 
   // PTY initialization
@@ -469,8 +521,8 @@ export function TerminalPane(props: TerminalPaneProps) {
     }
   }
 
-  function handleAcceptSuggestion(): boolean {
-    const nextValue = acceptSuggestion();
+  function handleAcceptSuggestionV2(): boolean {
+    const nextValue = autocompleteV2.acceptSuggestion();
     if (!nextValue) return false;
 
     setInputValue(props.sessionId, nextValue);
@@ -482,21 +534,53 @@ export function TerminalPane(props: TerminalPaneProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    // Track cursor position for navigation keys
+    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      const target = event.currentTarget as HTMLInputElement;
+      // Update after browser processes the key
+      requestAnimationFrame(() => {
+        setCursorPos(target.selectionStart ?? inputValue().length);
+      });
+    }
+
+    // Delegate to V2 autocomplete handler first
+    const autocompleteHandled = autocompleteV2.handleKeyDown(event);
+    if (autocompleteHandled) {
+      // Tab was handled by the hook — apply the accepted suggestion value
+      if (event.key === "Tab") {
+        handleAcceptSuggestionV2();
+      }
+      return;
+    }
+
+    // Tab — accept AI ghost command when input empty, ghost exists, menu not visible
+    if (
+      event.key === "Tab" &&
+      !inputValue().trim() &&
+      ghostCmd.ghostCommand() &&
+      !autocompleteV2.menuVisible()
+    ) {
+      event.preventDefault();
+      const accepted = ghostCmd.acceptGhostCommand();
+      if (accepted) {
+        setInputValue(props.sessionId, accepted);
+        requestAnimationFrame(() => {
+          if (!inputRef) return;
+          inputRef.setSelectionRange(accepted.length, accepted.length);
+        });
+      }
+      return;
+    }
+
     if (event.ctrlKey && event.shiftKey && event.key === "Enter") {
       event.preventDefault();
       void handleExecuteCommand(true);
       return;
     }
 
-    if (event.key === "Tab" && suggestion()) {
-      event.preventDefault();
-      handleAcceptSuggestion();
-      return;
-    }
-
     if (
       event.key === "ArrowRight" &&
-      suggestion() &&
+      (autocompleteV2.ghostText() || ghostCmd.ghostCommand()) &&
       !event.altKey &&
       !event.ctrlKey &&
       !event.metaKey &&
@@ -508,7 +592,19 @@ export function TerminalPane(props: TerminalPaneProps) {
 
       if (selectionStart === inputValue().length && selectionEnd === inputValue().length) {
         event.preventDefault();
-        handleAcceptSuggestion();
+        // Accept AI ghost command if input is empty and ghost exists
+        if (!inputValue().trim() && ghostCmd.ghostCommand()) {
+          const accepted = ghostCmd.acceptGhostCommand();
+          if (accepted) {
+            setInputValue(props.sessionId, accepted);
+            requestAnimationFrame(() => {
+              if (!inputRef) return;
+              inputRef.setSelectionRange(accepted.length, accepted.length);
+            });
+          }
+        } else {
+          handleAcceptSuggestionV2();
+        }
         return;
       }
     }
@@ -655,10 +751,16 @@ export function TerminalPane(props: TerminalPaneProps) {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div class="command-input-shell">
-              <Show when={suggestion()}>
+              <Show when={ghostCmd.ghostCommand() && !inputValue().trim()}>
+                <div class="command-ghost command-ghost-ai" aria-hidden="true">
+                  <span class="command-ghost-typed">{inputValue()}</span>
+                  <span class="command-ghost-completion">{ghostCmd.ghostCommand()}</span>
+                </div>
+              </Show>
+              <Show when={!ghostCmd.ghostCommand() && autocompleteV2.ghostText()}>
                 <div class="command-ghost" aria-hidden="true">
                   <span class="command-ghost-typed">{inputValue()}</span>
-                  <span class="command-ghost-completion">{suggestion()!.completion}</span>
+                  <span class="command-ghost-completion">{autocompleteV2.ghostText()}</span>
                 </div>
               </Show>
 
@@ -668,8 +770,19 @@ export function TerminalPane(props: TerminalPaneProps) {
                 class="command-input"
                 placeholder={hasRunningCommand() ? "Command running... type next command" : "Warp anything e.g. Create unit tests for my authentication service"}
                 value={inputValue()}
-                onInput={(e) => setInputValue(props.sessionId, (e.target as HTMLInputElement).value)}
+                onInput={(e) => {
+                  const target = e.target as HTMLInputElement;
+                  setInputValue(props.sessionId, target.value);
+                  setCursorPos(target.selectionStart ?? target.value.length);
+                  // Dismiss AI ghost command when user types
+                  if (target.value.length > 0) {
+                    ghostCmd.dismissGhostCommand();
+                  }
+                }}
                 onKeyDown={handleKeyDown}
+                onClick={(e) => {
+                  setCursorPos((e.target as HTMLInputElement).selectionStart ?? inputValue().length);
+                }}
                 onFocus={() => { isInputFocusedRef.current = true; }}
                 onBlur={() => { isInputFocusedRef.current = false; }}
               />
@@ -678,14 +791,24 @@ export function TerminalPane(props: TerminalPaneProps) {
             <div class="input-hint">
               <Show when={hasRunningCommand()} fallback={
                 <Show when={hasRunningAgentTask()} fallback={
-                  <Show when={suggestion()} fallback={
-                    <>
-                      <span>Ctrl+Shift+Enter</span>
-                      <span class="hint-action">new /agent conversation</span>
-                    </>
+                  <Show when={ghostCmd.isPredicting()} fallback={
+                    <Show when={ghostCmd.ghostCommand()} fallback={
+                      <Show when={autocompleteV2.ghostText()} fallback={
+                        <>
+                          <span>Ctrl+Shift+Enter</span>
+                          <span class="hint-action">new /agent conversation</span>
+                        </>
+                      }>
+                        <span>tab / ↑↓ / RightArrow</span>
+                        <span class="hint-action">accept suggestion</span>
+                      </Show>
+                    }>
+                      <span>Tab / RightArrow</span>
+                      <span class="hint-action">accept AI suggestion</span>
+                    </Show>
                   }>
-                    <span>tab or RightArrow</span>
-                    <span class="hint-action">accept {suggestion()!.entry.kind} suggestion</span>
+                    <span>Predicting...</span>
+                    <span class="hint-action">AI thinking</span>
                   </Show>
                 }>
                   <span class="running-hint">
@@ -700,6 +823,23 @@ export function TerminalPane(props: TerminalPaneProps) {
                 </span>
               </Show>
             </div>
+
+            <AutocompleteMenu
+              suggestions={autocompleteV2.suggestions}
+              selectedIndex={autocompleteV2.selectedIndex}
+              position={autocompleteV2.menuPosition}
+              visible={autocompleteV2.menuVisible}
+              onSelect={(suggestion) => {
+                const val = suggestion.value;
+                const currentInput = inputValue();
+                setInputValue(props.sessionId, currentInput + (currentInput.endsWith(' ') ? '' : ' ') + val);
+                autocompleteV2.dismissMenu();
+                inputRef?.focus();
+              }}
+              onHighlight={(index) => {
+                autocompleteV2.highlightIndex(index);
+              }}
+            />
           </div>
         </div>
       </div>

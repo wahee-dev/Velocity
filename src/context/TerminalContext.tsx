@@ -17,9 +17,16 @@ import type {
 
 // ── State ────────────────────────────────────────────────────────────
 
+interface PendingConfirmation {
+  taskId: string;
+  command: string;
+  reason: string;
+}
+
 interface TerminalState {
   sessions: Map<string, TerminalSession>;
   activeSessionId: string | null;
+  pendingConfirmations: Map<string, PendingConfirmation>;
 }
 
 function createDefaultSession(id: string, path: string): TerminalSession {
@@ -120,7 +127,8 @@ interface TerminalContextValue {
     gitStatus: { branch: string; changes: number }
   ) => void;
   gcBlocks: (sessionId: string, keepLastN?: number) => void;
-  onExecute: (sessionId: string, command: string) => void;
+  pendingConfirmation: (taskId: string) => PendingConfirmation | undefined;
+  respondConfirmation: (taskId: string, allowed: boolean) => Promise<void>;
   startAgentTask: (
     sessionId: string,
     prompt: string,
@@ -137,6 +145,7 @@ export function TerminalProvider(props: { children: any }) {
   const [state, setStateRaw] = createSignal<TerminalState>({
     sessions: new Map(),
     activeSessionId: null,
+    pendingConfirmations: new Map(),
   });
 
   let latestState: TerminalState = state();
@@ -177,6 +186,15 @@ export function TerminalProvider(props: { children: any }) {
           ...session,
           agentTasks,
         }),
+      });
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    listen<{ taskId: string; command: string; reason: string }>("agent://confirm", (event) => {
+      const { taskId, command, reason } = event.payload;
+      const cur = state();
+      setState({
+        ...cur,
+        pendingConfirmations: new Map(cur.pendingConfirmations).set(taskId, { taskId, command, reason }),
       });
     }).then((unlisten) => unlisteners.push(unlisten));
 
@@ -352,10 +370,17 @@ export function TerminalProvider(props: { children: any }) {
     });
   };
 
-  const onExecute = (_sessionId: string, command: string): void => {
-    invoke("execute_command", { command }).catch((err) =>
-      console.error("[TerminalContext] execute_command error:", err)
-    );
+  const pendingConfirmation = (taskId: string): PendingConfirmation | undefined => {
+    return state().pendingConfirmations.get(taskId);
+  };
+
+  const respondConfirmation = async (taskId: string, allowed: boolean): Promise<void> => {
+    await invoke("respond_agent_confirmation", { taskId, allowed });
+    // Remove from pending state
+    const s = state();
+    const next = new Map(s.pendingConfirmations);
+    next.delete(taskId);
+    setState({ ...s, pendingConfirmations: next });
   };
 
   const startAgentTask = async (
@@ -432,7 +457,8 @@ export function TerminalProvider(props: { children: any }) {
     setShowWelcome,
     setGitStatus,
     gcBlocks,
-    onExecute,
+    pendingConfirmation,
+    respondConfirmation,
     startAgentTask,
     revertAgentTask,
   };

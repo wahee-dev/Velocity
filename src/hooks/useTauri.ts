@@ -49,29 +49,6 @@ export async function handleKillPty(sessionId: string): Promise<void> {
   }
 }
 
-// ── Command Execution ─────────────────────────────────────────────
-
-/** Execute a one-shot shell command (non-interactive). Returns stdout/stderr. */
-export async function handleExecuteCommand(command: string): Promise<string> {
-  try {
-    const result = await invoke<string>('execute_command', { command });
-    return result;
-  } catch (error) {
-    console.error('[Tauri] execute_command failed:', error);
-    throw error;
-  }
-}
-
-/** Cancel / kill a running command or PTY session. */
-export async function handleCancelCommand(blockId: string): Promise<void> {
-  try {
-    await invoke('cancel_command', { blockId });
-  } catch (error) {
-    console.error('[Tauri] cancel_command failed:', error);
-    throw error;
-  }
-}
-
 // ── File System ───────────────────────────────────────────────────
 
 /** Read directory contents as a sorted FileNode list. */
