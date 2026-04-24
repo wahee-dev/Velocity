@@ -604,8 +604,11 @@ fn get_system_commands() -> Result<Vec<String>, String> {
     #[cfg(not(target_os = "windows"))]
     let path_sep = ':';
 
-    #[cfg(target_os = "windows")]
-    let exts: &[&str] = &[".exe", ".cmd", ".bat", ".com", ".ps1"];
+    let exts: &[&str] = if cfg!(target_os = "windows") {
+        &[".exe", ".cmd", ".bat", ".com", ".ps1"]
+    } else {
+        &[]
+    };
 
     for dir_str in path_var.split(path_sep) {
         let dir = Path::new(dir_str.trim());
