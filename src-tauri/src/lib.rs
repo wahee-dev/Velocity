@@ -598,17 +598,36 @@ fn get_system_commands() -> Result<Vec<String>, String> {
     let mut seen = HashSet::new();
     let mut cmds = Vec::new();
 
-    // Platform-specific path separator and executable detection
+    // Platform-specific path separator
     #[cfg(target_os = "windows")]
     let path_sep = ';';
     #[cfg(not(target_os = "windows"))]
     let path_sep = ':';
 
-    let exts: &[&str] = if cfg!(target_os = "windows") {
-        &[".exe", ".cmd", ".bat", ".com", ".ps1"]
-    } else {
-        &[]
-    };
+    fn is_valid_executable(entry: &std::fs::DirEntry) -> bool {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name.contains(' ') { return false; }
+
+        #[cfg(target_os = "windows")]
+        {
+            let lower = name.to_lowercase();
+            const EXTS: &[&str] = &[".exe", ".cmd", ".bat", ".com", ".ps1"];
+            EXTS.iter().any(|e| lower.ends_with(e) || (!lower.contains('.') && lower.len() > 1))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                entry.metadata()
+                    .ok()
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(unix))]
+            { true }
+        }
+    }
 
     for dir_str in path_var.split(path_sep) {
         let dir = Path::new(dir_str.trim());
@@ -617,25 +636,7 @@ fn get_system_commands() -> Result<Vec<String>, String> {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name.contains(' ') { continue; }
-
-                let is_executable = if cfg!(target_os = "windows") {
-                    let lower = name.to_lowercase();
-                    exts.iter().any(|e| lower.ends_with(e) || (!lower.contains('.') && lower.len() > 1))
-                } else {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        entry.metadata()
-                            .ok()
-                            .map(|m| m.permissions().mode() & 0o111 != 0)
-                            .unwrap_or(false)
-                    }
-                    #[cfg(not(unix))]
-                    { true }
-                };
-
-                if is_executable && seen.insert(name.clone()) {
+                if is_valid_executable(&entry) && seen.insert(name.clone()) {
                     cmds.push(name);
                 }
             }

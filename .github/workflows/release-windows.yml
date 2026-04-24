@@ -40,6 +40,8 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
+          releaseName: Velocity ${{ github.ref_name }}
+          releaseBody: "See [CHANGELOG](https://github.com/wahee-dev/Velocity/blob/main/CHANGELOG.md) for details."
           args: --target x86_64-pc-windows-msvc
 
       - name: Upload .msi artifact
