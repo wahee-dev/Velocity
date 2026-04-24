@@ -39,6 +39,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         with:
+          tagName: ${{ github.ref_name }}
           args: --target x86_64-pc-windows-msvc
 
       - name: Upload .msi artifact
