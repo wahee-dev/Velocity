@@ -781,6 +781,10 @@ export function TerminalPane(props: TerminalPaneProps) {
               ref={inputRef!}
               type="text"
               class="command-input"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck={false}
               placeholder={hasRunningCommand() ? "Command running... type next command" : "Warp anything e.g. Create unit tests for my authentication service"}
               value={inputValue()}
               onInput={(e) => {
