@@ -34,6 +34,7 @@ interface FileExplorerProps {
   isOpen: boolean;
   rootPaths: string[];
   onClose: () => void;
+  onFileOpen?: (filePath: string, fileName: string) => void;
 }
 
 export function FileExplorer(props: FileExplorerProps) {
@@ -98,9 +99,13 @@ export function FileExplorer(props: FileExplorerProps) {
   async function handleSelectFile(_treeIndex: number, node: TrackedFileNode) {
     setSelectedId(node.id);
     if (node.type === "file") {
-      try {
-        await invoke("open_file", { path: node.fullPath });
-      } catch {}
+      if (props.onFileOpen) {
+        props.onFileOpen(node.fullPath, node.name);
+      } else {
+        try {
+          await invoke("open_file", { path: node.fullPath });
+        } catch {}
+      }
     }
   }
 

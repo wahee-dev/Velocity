@@ -681,6 +681,32 @@ fn get_git_status(path: Option<String>) -> Result<GitStatus, String> {
     Ok(GitStatus { branch, changes })
 }
 
+/// Read file contents as a UTF-8 string.
+#[tauri::command]
+fn read_file_content(path: String) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+    if !p.is_file() {
+        return Err(format!("Path is not a file: {}", path));
+    }
+    std::fs::read_to_string(p).map_err(|e| format!("Failed to read file: {}", e))
+}
+
+/// Write content to a file. Creates parent directories if needed.
+#[tauri::command]
+fn write_file_content(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if let Some(parent) = p.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+    std::fs::write(&p, content).map_err(|e| format!("Failed to write file: {}", e))
+}
+
 #[tauri::command]
 fn open_file(path: &str, app: tauri::AppHandle) -> Result<(), String> {
     let resolved = if std::path::Path::new(path).is_absolute() {
@@ -702,52 +728,213 @@ fn open_file(path: &str, app: tauri::AppHandle) -> Result<(), String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContentSearchResult {
+    pub path: String,
+    pub name: String,
+    pub line_number: usize,
+    pub line_content: String,
+}
+
+/// Search for a pattern within file contents across a directory.
+#[tauri::command]
+fn grep_files(
+    path: String,
+    pattern: String,
+    is_case_sensitive: bool,
+    is_regex: bool,
+) -> Result<Vec<ContentSearchResult>, String> {
+    if pattern.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let base = std::path::PathBuf::from(&path);
+    if !base.exists() || !base.is_dir() {
+        return Err(format!("Directory does not exist: {}", path));
+    }
+
+    use std::thread;
+    use std::sync::Arc;
+    use regex::RegexBuilder;
+
+    let num_threads = thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let results = Arc::new(Mutex::new(Vec::new()));
+    
+    // Prepare regex or literal search
+    let regex = if is_regex {
+        Some(RegexBuilder::new(&pattern)
+            .case_insensitive(!is_case_sensitive)
+            .build()
+            .map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+
+    let pattern_arc = Arc::new(pattern);
+    let pattern_lower_arc = Arc::new(pattern_arc.to_lowercase());
+
+    // Collect all files first (respecting skip-list)
+    let mut files_to_search = Vec::new();
+    fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                
+                if path.is_dir() {
+                    if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" || name == "build" {
+                        continue;
+                    }
+                    collect_files(&path, files);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    collect_files(&base, &mut files_to_search);
+
+    let mut handles = Vec::new();
+    let chunk_size = (files_to_search.len() + num_threads - 1).max(1) / num_threads;
+    let chunk_size = chunk_size.max(1);
+
+    for chunk in files_to_search.chunks(chunk_size) {
+        let chunk = chunk.to_vec();
+        let results = Arc::clone(&results);
+        let pattern = Arc::clone(&pattern_arc);
+        let pattern_lower = Arc::clone(&pattern_lower_arc);
+        let regex = regex.clone();
+
+        handles.push(thread::spawn(move || {
+            for path in chunk {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (i, line) in content.lines().enumerate() {
+                        let matched = if let Some(ref re) = regex {
+                            re.is_match(line)
+                        } else if is_case_sensitive {
+                            line.contains(&*pattern)
+                        } else {
+                            line.to_lowercase().contains(&*pattern_lower)
+                        };
+
+                        if matched {
+                            let mut res = results.lock().unwrap();
+                            res.push(ContentSearchResult {
+                                path: path.to_string_lossy().to_string(),
+                                name: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                                line_number: i + 1,
+                                line_content: line.trim().to_string(),
+                            });
+                            if res.len() >= 100 { return; }
+                        }
+                    }
+                }
+                if results.lock().unwrap().len() >= 100 { break; }
+            }
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let mut final_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+    final_results.truncate(100);
+    Ok(final_results)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchResult {
     pub path: String,
     pub name: String,
 }
 
-/// Recursively search for files by name in a directory.
+/// Recursively search for files by name in a directory using parallel execution.
 #[tauri::command]
 fn search_files(path: String, query: String) -> Result<Vec<SearchResult>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
     let query_lower = query.to_lowercase();
-    let mut results = Vec::new();
-    let base = std::path::Path::new(&path);
+    let base = std::path::PathBuf::from(&path);
 
     if !base.exists() || !base.is_dir() {
         return Err(format!("Directory does not exist: {}", path));
     }
 
-    fn walk(dir: &std::path::Path, query_lower: &str, results: &mut Vec<SearchResult>) -> Result<(), String> {
-        let entries = std::fs::read_dir(dir).map_err(|e| format!("Failed to read dir: {}", e))?;
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            let metadata = entry.metadata().map_err(|e| format!("Failed to read metadata: {}", e))?;
+    use std::thread;
 
-            if metadata.is_dir() {
-                // Skip hidden dirs (like .git, node_modules) for performance
-                if name.starts_with('.') || name == "node_modules" || name == "target" {
-                    continue;
-                }
-                walk(&entry.path(), query_lower, results)?;
-            } else if name.to_lowercase().contains(query_lower) {
-                results.push(SearchResult {
-                    path: entry.path().to_string_lossy().to_string(),
-                    name,
-                });
-            }
-
-            // Limit results to prevent slowdown
-            if results.len() >= 100 {
-                break;
-            }
-        }
-        Ok(())
+    let num_threads = thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let query_arc = Arc::new(query_lower);
+    
+    // We'll use a simple work-stealing-like approach or just partition the top-level dirs
+    let entries = std::fs::read_dir(&base).map_err(|e| e.to_string())?;
+    let mut initial_paths = Vec::new();
+    for entry in entries.flatten() {
+        initial_paths.push(entry.path());
     }
 
-    walk(base, &query_lower, &mut results)?;
-    Ok(results)
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+
+    // Chunk the initial paths for threads
+    let chunk_size = (initial_paths.len() + num_threads - 1).max(1) / num_threads;
+    let chunk_size = chunk_size.max(1);
+
+    for chunk in initial_paths.chunks(chunk_size) {
+        let chunk = chunk.to_vec();
+        let query = Arc::clone(&query_arc);
+        let results = Arc::clone(&results);
+
+        handles.push(thread::spawn(move || {
+            let mut local_results = Vec::new();
+            for path in chunk {
+                let _ = walk_sync(&path, &query, &mut local_results);
+                if local_results.len() >= 100 { break; }
+            }
+            let mut final_results = results.lock().unwrap();
+            final_results.extend(local_results);
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    let mut final_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+    final_results.truncate(100);
+    Ok(final_results)
+}
+
+fn walk_sync(dir: &std::path::Path, query_lower: &str, results: &mut Vec<SearchResult>) -> Result<(), String> {
+    if results.len() >= 100 {
+        return Ok(());
+    }
+
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let metadata = dir.metadata().map_err(|e| e.to_string())?;
+
+    if metadata.is_dir() {
+        // Skip hidden dirs and heavy ones
+        if name.starts_with('.') || name == "node_modules" || name == "target" || name == "dist" || name == "build" {
+            return Ok(());
+        }
+        
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                walk_sync(&entry.path(), query_lower, results)?;
+                if results.len() >= 100 { break; }
+            }
+        }
+    } else if name.to_lowercase().contains(query_lower) {
+        results.push(SearchResult {
+            path: dir.to_string_lossy().to_string(),
+            name,
+        });
+    }
+
+    Ok(())
 }
 
 const MAX_AUTOCOMPLETE_DEPTH: usize = 3;
@@ -1155,10 +1342,13 @@ pub fn run() {
             close_pane,
             // File explorer
             open_file,
+            read_file_content,
+            write_file_content,
             read_dir,
             get_system_commands,
             get_git_status,
             search_files,
+            grep_files,
             build_autocomplete_index,
             // PTY multi-session manager
             spawn_pty,

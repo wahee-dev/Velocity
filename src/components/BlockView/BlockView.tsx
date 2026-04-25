@@ -1,5 +1,5 @@
 /* @solid */
-import { createEffect, createMemo, Show } from "solid-js";
+import { createEffect, createMemo, Show, For } from "solid-js";
 import type { CommandBlock } from "../../types";
 import { CompletedBlock } from "./CompletedBlock";
 import "./BlockView.css";
@@ -51,13 +51,14 @@ export function BlockView(props: BlockViewProps) {
     >
       <div class="block-view" ref={scrollRef!}>
         <div class="block-list">
-          {completedBlocks().map((block) => (
-            <CompletedBlock
-              key={block.id}
-              block={block}
-              onCopyCommand={props.onCopyCommand}
-            />
-          ))}
+          <For each={completedBlocks()}>
+            {(block) => (
+              <CompletedBlock
+                block={block}
+                onCopyCommand={props.onCopyCommand}
+              />
+            )}
+          </For>
 
           <Show when={props.activeBlock && props.activeBlockNode}>
             {props.activeBlockNode?.()}

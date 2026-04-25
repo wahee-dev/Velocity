@@ -22,7 +22,10 @@ import { useTerminalContext } from "../../context/TerminalContext";
 import { useAutocompleteV2 } from "../../hooks/useAutocompleteV2";
 import { useGhostCommand } from "../../hooks/useGhostCommand";
 import { AutocompleteMenu } from "../AutocompleteMenu/AutocompleteMenu";
-import { createOutputCapture } from "../../hooks/useOutputCapture";
+import {
+  createOutputCapture,
+  looksLikePrompt,
+} from "../../hooks/useOutputCapture";
 import {
   consumeExitMarkerChunk,
   createMarkerState,
@@ -247,6 +250,15 @@ export function TerminalPane(props: TerminalPaneProps) {
 
         if (markerResult.cleanedOutput) {
           outputCapture.appendOutput(markerResult.cleanedOutput);
+          
+          // Heuristic: if output ends with something that looks like a prompt, 
+          // and we don't have an exit marker yet, consider finalising after a short delay.
+          // This helps with shells where exit markers are disabled or failing.
+          const lines = markerResult.cleanedOutput.split(/\r?\n/);
+          const lastLine = lines[lines.length - 1]?.trim();
+          if (lastLine && looksLikePrompt(lastLine)) {
+            promptDetector?.noteCwdChange(); // Use the shorter debounceMs (500ms)
+          }
         }
         promptDetector?.noteOutput();
 
@@ -725,124 +737,125 @@ export function TerminalPane(props: TerminalPaneProps) {
             ))}
           </div>
         </Show>
+      </div>
 
-        <div class="pane-footer">
-          <div class="status-bar">
-            <span class="version-badge">v25.8.1</span>
-            <div class="path-info">
-              <Folder size={12} />
-              <span>{fullDisplayPath()}</span>
-            </div>
-            <div class="git-info">
-              <GitBranch size={12} />
-              <span class="branch-name">{gitStatus().branch}</span>
-            </div>
-            <span class="git-changes">+/- {gitStatus().changes}</span>
-            <Show when={hasRunningAgentTask()}>
-              <span class="running-hint status-hint-agent">
-                <span class="running-indicator-inline" />
-                <span>agent active</span>
-              </span>
+      <div class="pane-footer">
+        <div class="status-bar">
+          <span class="version-badge">v25.8.1</span>
+          <div class="path-info">
+            <Folder size={12} />
+            <span>{fullDisplayPath()}</span>
+          </div>
+          <div class="git-info">
+            <GitBranch size={12} />
+            <span class="branch-name">{gitStatus().branch}</span>
+          </div>
+          <span class="git-changes">+/- {gitStatus().changes}</span>
+          <Show when={hasRunningAgentTask()}>
+            <span class="running-hint status-hint-agent">
+              <span class="running-indicator-inline" />
+              <span>agent active</span>
+            </span>
+          </Show>
+        </div>
+
+        <div
+          class="input-container"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <div class="command-input-shell">
+            <Show when={ghostCmd.ghostCommand() && !inputValue().trim()}>
+              <div class="command-ghost command-ghost-ai" aria-hidden="true">
+                <span class="command-ghost-typed">{inputValue()}</span>
+                <span class="command-ghost-completion">{ghostCmd.ghostCommand()}</span>
+              </div>
             </Show>
+            <Show when={!ghostCmd.ghostCommand() && autocompleteV2.ghostText()}>
+              <div class="command-ghost" aria-hidden="true">
+                <span class="command-ghost-typed">{inputValue()}</span>
+                <span class="command-ghost-completion">{autocompleteV2.ghostText()}</span>
+              </div>
+            </Show>
+
+            <input
+              ref={inputRef!}
+              type="text"
+              class="command-input"
+              placeholder={hasRunningCommand() ? "Command running... type next command" : "Warp anything e.g. Create unit tests for my authentication service"}
+              value={inputValue()}
+              onInput={(e) => {
+                const target = e.target as HTMLInputElement;
+                setInputValue(props.sessionId, target.value);
+                setCursorPos(target.selectionStart ?? target.value.length);
+                // Dismiss AI ghost command when user types
+                if (target.value.length > 0) {
+                  ghostCmd.dismissGhostCommand();
+                }
+              }}
+              onKeyDown={handleKeyDown}
+              onClick={(e) => {
+                setCursorPos((e.target as HTMLInputElement).selectionStart ?? inputValue().length);
+              }}
+              onFocus={() => { isInputFocusedRef.current = true; }}
+              onBlur={() => { isInputFocusedRef.current = false; }}
+            />
           </div>
 
-          <div
-            class="input-container"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div class="command-input-shell">
-              <Show when={ghostCmd.ghostCommand() && !inputValue().trim()}>
-                <div class="command-ghost command-ghost-ai" aria-hidden="true">
-                  <span class="command-ghost-typed">{inputValue()}</span>
-                  <span class="command-ghost-completion">{ghostCmd.ghostCommand()}</span>
-                </div>
-              </Show>
-              <Show when={!ghostCmd.ghostCommand() && autocompleteV2.ghostText()}>
-                <div class="command-ghost" aria-hidden="true">
-                  <span class="command-ghost-typed">{inputValue()}</span>
-                  <span class="command-ghost-completion">{autocompleteV2.ghostText()}</span>
-                </div>
-              </Show>
-
-              <input
-                ref={inputRef!}
-                type="text"
-                class="command-input"
-                placeholder={hasRunningCommand() ? "Command running... type next command" : "Warp anything e.g. Create unit tests for my authentication service"}
-                value={inputValue()}
-                onInput={(e) => {
-                  const target = e.target as HTMLInputElement;
-                  setInputValue(props.sessionId, target.value);
-                  setCursorPos(target.selectionStart ?? target.value.length);
-                  // Dismiss AI ghost command when user types
-                  if (target.value.length > 0) {
-                    ghostCmd.dismissGhostCommand();
-                  }
-                }}
-                onKeyDown={handleKeyDown}
-                onClick={(e) => {
-                  setCursorPos((e.target as HTMLInputElement).selectionStart ?? inputValue().length);
-                }}
-                onFocus={() => { isInputFocusedRef.current = true; }}
-                onBlur={() => { isInputFocusedRef.current = false; }}
-              />
-            </div>
-
-            <div class="input-hint">
-              <Show when={hasRunningCommand()} fallback={
-                <Show when={hasRunningAgentTask()} fallback={
-                  <Show when={ghostCmd.isPredicting()} fallback={
-                    <Show when={ghostCmd.ghostCommand()} fallback={
-                      <Show when={autocompleteV2.ghostText()} fallback={
-                        <>
-                          <span>Ctrl+Shift+Enter</span>
-                          <span class="hint-action">new /agent conversation</span>
-                        </>
-                      }>
-                        <span>tab / ↑↓ / RightArrow</span>
-                        <span class="hint-action">accept suggestion</span>
-                      </Show>
+          <div class="input-hint">
+            <Show when={hasRunningCommand()} fallback={
+              <Show when={hasRunningAgentTask()} fallback={
+                <Show when={ghostCmd.isPredicting()} fallback={
+                  <Show when={ghostCmd.ghostCommand()} fallback={
+                    <Show when={autocompleteV2.ghostText()} fallback={
+                      <>
+                        <span>Ctrl+Shift+Enter</span>
+                        <span class="hint-action">new /agent conversation</span>
+                      </>
                     }>
-                      <span>Tab / RightArrow</span>
-                      <span class="hint-action">accept AI suggestion</span>
+                      <span>tab / ↑↓ / RightArrow</span>
+                      <span class="hint-action">accept suggestion</span>
                     </Show>
                   }>
-                    <span>Predicting...</span>
-                    <span class="hint-action">AI thinking</span>
+                    <span>Tab / RightArrow</span>
+                    <span class="hint-action">accept AI suggestion</span>
                   </Show>
                 }>
-                  <span class="running-hint">
-                    <span class="running-indicator-inline" />
-                    <span>agent is thinking</span>
-                  </span>
+                  <span>Predicting...</span>
+                  <span class="hint-action">AI thinking</span>
                 </Show>
               }>
                 <span class="running-hint">
                   <span class="running-indicator-inline" />
-                  <span>command in progress</span>
+                  <span>agent is thinking</span>
                 </span>
               </Show>
-            </div>
-
-            <AutocompleteMenu
-              suggestions={autocompleteV2.suggestions}
-              selectedIndex={autocompleteV2.selectedIndex}
-              position={autocompleteV2.menuPosition}
-              visible={autocompleteV2.menuVisible}
-              onSelect={(suggestion) => {
-                const val = suggestion.value;
-                const currentInput = inputValue();
-                setInputValue(props.sessionId, currentInput + (currentInput.endsWith(' ') ? '' : ' ') + val);
-                autocompleteV2.dismissMenu();
-                inputRef?.focus();
-              }}
-              onHighlight={(index) => {
-                autocompleteV2.highlightIndex(index);
-              }}
-            />
+            }>
+              <span class="running-hint">
+                <span class="running-indicator-inline" />
+                <span>command in progress</span>
+              </span>
+            </Show>
           </div>
+
+          <AutocompleteMenu
+            suggestions={autocompleteV2.suggestions}
+            selectedIndex={autocompleteV2.selectedIndex}
+            position={autocompleteV2.menuPosition}
+            visible={autocompleteV2.menuVisible}
+            onSelect={(suggestion) => {
+              const val = suggestion.value;
+              const currentInput = inputValue();
+              setInputValue(props.sessionId, currentInput + (currentInput.endsWith(' ') ? '' : ' ') + val);
+              autocompleteV2.dismissMenu();
+              inputRef?.focus();
+            }}
+            onHighlight={(index) => {
+              autocompleteV2.highlightIndex(index);
+            }}
+          />
         </div>
       </div>
+
     </div>
   );
 }

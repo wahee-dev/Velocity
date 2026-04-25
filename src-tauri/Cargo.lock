@@ -5226,6 +5226,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "portable-pty",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

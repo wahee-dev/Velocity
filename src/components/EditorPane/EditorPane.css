@@ -1,0 +1,171 @@
+/* ── Editor Pane — mirrors TerminalPane layout ── */
+.editor-pane {
+  flex: 1 1 0%;
+  display: flex;
+  flex-direction: column;
+  background: #000000;
+  min-width: 200px;
+  height: 100%;
+  overflow: hidden;
+  border-right: 1px solid var(--border-subtle);
+  position: relative;
+}
+
+.editor-pane:last-child {
+  border-right: none;
+}
+
+/* ── Header — shows filename + actions, always visible (unlike terminal) ── */
+.editor-pane > .pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  height: 30px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: #0d0d0d;
+  position: relative;
+  z-index: 5;
+  opacity: 1;
+}
+
+.editor-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor-filename {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dirty-dot {
+  color: #f97316;
+  flex-shrink: 0;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.pane-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  transition: background 0.12s, color 0.12s;
+}
+
+.pane-btn:hover:not(:disabled) {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
+}
+
+.pane-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.pane-btn-save:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--accent-green);
+}
+
+.pane-btn-close:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* ── Content — Monaco editor fills this entirely ── */
+.editor-pane > .pane-content {
+  flex: 1 1 0%;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  width: 100%;
+  background: #000000;
+}
+
+/* ── Footer / Status bar ── */
+.editor-pane > .pane-footer {
+  flex-shrink: 0;
+  background: #0d0d0d;
+  border-top: 1px solid var(--border-subtle);
+  position: relative;
+  z-index: 4;
+  width: 100%;
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px;
+  min-width: 0;
+  overflow: hidden;
+  height: 26px;
+}
+
+.path-info {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+  min-width: 0;
+  max-width: 320px;
+}
+
+.path-info span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cursor-pos {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+
+.save-status {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.save-status.saving {
+  color: var(--accent-blue);
+}
+
+.save-status.saved {
+  color: var(--text-muted);
+}
+
+.save-status.error {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}

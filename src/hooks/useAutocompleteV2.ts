@@ -369,9 +369,10 @@ export function useAutocompleteV2(
   createEffect(() => {
     if (menuVisible() && inputElement) {
       const rect = inputElement.getBoundingClientRect();
+      // Position above input since it's now at the bottom
       setMenuPosition({
         x: rect.left,
-        y: rect.bottom + 4,
+        y: rect.top - 8,
       });
     }
   });

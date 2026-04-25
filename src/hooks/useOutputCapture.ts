@@ -28,7 +28,7 @@ function stripControlSequences(value: string): string {
   return value.replace(OSC_SEQUENCE_PATTERN, "").replace(CSI_SEQUENCE_PATTERN, "");
 }
 
-function looksLikePrompt(value: string): boolean {
+export function looksLikePrompt(value: string): boolean {
   if (!value || value.length > 160) return false;
   return (
     /^[A-Za-z]:\\.*>\s*$/.test(value) ||

@@ -1,12 +1,13 @@
 /* @solid */
-import { createSignal, createEffect, onMount, Show } from "solid-js";
+import { createSignal, createEffect, onMount, Show, For } from "solid-js";
 import { SessionsSidebar } from "./components/SessionsSidebar/SessionsSidebar";
 import { FileExplorer } from "./components/FileExplorer/FileExplorer";
 import { TerminalPane } from "./components/TerminalPane/TerminalPane";
+import { EditorPane } from "./components/EditorPane/EditorPane";
 import { GlobalSearchOverlay } from "./components/GlobalSearchOverlay/GlobalSearchOverlay";
 import { TerminalProvider, useTerminalContext } from "./context/TerminalContext";
 import { invoke } from "@tauri-apps/api/core";
-import type { Workspace } from "./types";
+import type { Workspace, EditorTab } from "./types";
 
 const DEFAULT_PATH = "";
 
@@ -27,6 +28,7 @@ function AppInner() {
   const [activeWorkspaceId, setActiveWorkspaceId] = createSignal<string | null>(null);
   const [showFileExplorer, setShowFileExplorer] = createSignal(false);
   const [showGlobalSearch, setShowGlobalSearch] = createSignal(false);
+  const [editorTabs, setEditorTabs] = createSignal<EditorTab[]>([]);
 
   const activeWorkspace = () =>
     workspaces().find((w) => w.id === activeWorkspaceId()) ?? null;
@@ -125,6 +127,50 @@ function AppInner() {
     context.setActiveSession(paneId);
   }
 
+  // ── Editor tab management ──
+  function getLanguageFromExt(fileName: string): string {
+    const dotIndex = fileName.lastIndexOf(".");
+    if (dotIndex === -1) return "plaintext";
+    const ext = fileName.slice(dotIndex + 1).toLowerCase();
+    const map: Record<string, string> = {
+      ts: "typescript", tsx: "typescriptreact", js: "javascript", jsx: "javascriptreact",
+      json: "json", md: "markdown", html: "html", css: "css", scss: "scss",
+      rust: "rs", python: "python", toml: "toml", yaml: "yaml", yml: "yaml",
+      sh: "shellscript", bash: "shellscript", sql: "sql", xml: "xml", go: "go",
+      rs: "rust", java: "java", rb: "ruby", php: "php", lua: "lua",
+      env: "plaintext", txt: "plaintext", dockerfile: "dockerfile",
+    };
+    return map[ext] ?? "plaintext";
+  }
+
+  function openEditorTab(filePath: string, fileName: string) {
+    const existing = editorTabs().find((t) => t.filePath === filePath);
+    if (existing) return;
+
+    const newTab: EditorTab = {
+      id: crypto.randomUUID(),
+      filePath,
+      fileName,
+      isDirty: false,
+      language: getLanguageFromExt(fileName),
+    };
+    setEditorTabs((prev) => [...prev, newTab]);
+  }
+
+  function closeEditorTab(tabId: string) {
+    setEditorTabs((prev) => prev.filter((t) => t.id !== tabId));
+  }
+
+  function markSaved(tabId: string) {
+    setEditorTabs((prev) =>
+      prev.map((t) => (t.id === tabId ? { ...t, isDirty: false } : t))
+    );
+  }
+
+  async function saveEditorTab(tabId: string) {
+    markSaved(tabId);
+  }
+
   async function handleRemovePane(paneId: string) {
     const aw = activeWorkspace();
     if (!aw) return;
@@ -202,12 +248,24 @@ function AppInner() {
             isOpen={showFileExplorer()}
             rootPaths={explorerPaths()}
             onClose={() => setShowFileExplorer(false)}
+            onFileOpen={openEditorTab}
           />
         </Show>
         <div class="terminal-area">
-          {activeWorkspace()?.paneIds.map((id) => (
-            <TerminalPane key={id} sessionId={id} onClosePane={() => handleRemovePane(id)} />
-          ))}
+          <For each={editorTabs()}>
+            {(tab) => (
+              <EditorPane
+                tab={tab}
+                onClose={() => closeEditorTab(tab.id)}
+                onSave={(tabId) => saveEditorTab(tabId)}
+              />
+            )}
+          </For>
+          <For each={activeWorkspace()?.paneIds ?? []}>
+            {(id) => (
+              <TerminalPane sessionId={id} onClosePane={() => handleRemovePane(id)} />
+            )}
+          </For>
         </div>
         <Show when={showGlobalSearch()}>
           <GlobalSearchOverlay

@@ -55,7 +55,21 @@ export function wrapInteractiveCommand(
  * These lines contain the marker prefix but NOT a completed numeric marker.
  */
 function stripEchoedWrapLine(output: string, prefix: string): string {
-  return output.replace(/^.*\r?\n?(?=[\s\S]*__VELOCITY_EXIT__.*?\d+__)/s, '');
+  // Use a more robust approach: find the first line that contains the prefix
+  // and remove it, but ONLY if it doesn't look like a completed marker.
+  const lines = output.split(/\r?\n/);
+  const resultLines = [];
+  let stripped = false;
+
+  for (const line of lines) {
+    if (!stripped && line.includes(prefix) && !line.match(/__\d+__/)) {
+      stripped = true;
+      continue;
+    }
+    resultLines.push(line);
+  }
+
+  return resultLines.join('\n');
 }
 
 export function consumeExitMarkerChunk(
@@ -66,33 +80,38 @@ export function consumeExitMarkerChunk(
   const prefix = getMarkerPrefix(blockId);
   const combined = `${state.carry}${chunk}`;
 
-  // Use lastIndexOf: the real marker (from echo/printf) always comes AFTER
-  // any echoed command line that also contains the prefix text.
+  // Find the LAST occurrence of the prefix which should be the real marker
   const markerStart = combined.lastIndexOf(prefix);
 
   if (markerStart >= 0) {
     const remainder = combined.slice(markerStart + prefix.length);
+    // Support both positive and negative exit codes
     const completedMarker = remainder.match(/^(-?\d+)__/);
 
     if (!completedMarker) {
       // Prefix found but no trailing digits__ yet — partial marker, carry it
+      // But we should return everything BEFORE the prefix as cleaned output
       state.carry = combined.slice(markerStart);
       return {
         cleanedOutput: combined.slice(0, markerStart),
       };
     }
 
-    const exitCode = Number.parseInt(completedMarker[1], 10);
+    const exitCodeStr = completedMarker[1];
+    const exitCode = Number.parseInt(exitCodeStr, 10);
     const markerLength = prefix.length + completedMarker[0].length;
 
     // Everything before the real marker is the clean output.
-    // This includes the echoed wrap-line which we now strip.
-    let cleaned = combined.slice(0, markerStart) + combined.slice(markerStart + markerLength);
-    cleaned = stripEchoedWrapLine(cleaned, prefix);
+    // We also include anything AFTER the marker (if any).
+    let cleanedBefore = combined.slice(0, markerStart);
+    const cleanedAfter = combined.slice(markerStart + markerLength);
+    
+    // Strip the echoed wrap-line from the part BEFORE the marker.
+    cleanedBefore = stripEchoedWrapLine(cleanedBefore, prefix);
 
     state.carry = '';
     return {
-      cleanedOutput: cleaned,
+      cleanedOutput: cleanedBefore + cleanedAfter,
       exitCode: Number.isNaN(exitCode) ? undefined : exitCode,
     };
   }

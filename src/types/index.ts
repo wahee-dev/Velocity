@@ -19,6 +19,14 @@ export interface SearchResult {
   name: string;
 }
 
+/** Content search result — returned by the Rust grep_files command */
+export interface ContentSearchResult {
+  path: string;
+  name: string;
+  lineNumber: number;
+  lineContent: string;
+}
+
 export interface AutocompleteEntry {
   value: string;
   kind: 'script' | 'alias' | 'file' | 'history';
@@ -88,6 +96,14 @@ export interface FileNode {
   type: 'file' | 'folder';
   children?: FileNode[];
   isExpanded?: boolean;
+}
+
+export interface EditorTab {
+  id: string;
+  filePath: string;
+  fileName: string;
+  isDirty: boolean;
+  language: string;
 }
 
 export interface TerminalPane {
