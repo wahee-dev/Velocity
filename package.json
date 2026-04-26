@@ -1,13 +1,14 @@
 {
   "name": "velocity",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "benchmark": "bun scripts/benchmark-engine.ts"
   },
   "dependencies": {
     "@tanstack/solid-virtual": "^3.13.24",

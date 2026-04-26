@@ -54,7 +54,7 @@ export function useAutocompleteV2(
   let fileDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let predictionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPredictionTime = 0;
-  const PREDICTION_COOLDOWN_MS = 3000;
+  const PREDICTION_COOLDOWN_MS = 500;
 
   // Extract history entries from blocks
   const historyEntries = createMemo<string[]>(() => {
@@ -119,6 +119,16 @@ export function useAutocompleteV2(
 
       setSuggestions(suggs.slice(0, MAX_SUGGESTIONS));
       setSelectedIndex(suggs.length > 0 ? 0 : -1);
+
+      // ── Handle AI Fallback ──
+      // If we are inside a known command but have NO static suggestions,
+      // and the query is non-empty, trigger a low-confidence AI fallback.
+      if (suggs.length === 0 && result.query && result.command) {
+        if (predictionDebounceTimer) clearTimeout(predictionDebounceTimer);
+        predictionDebounceTimer = setTimeout(() => {
+          triggerAIFallback(result.rawInput, result.query, result.command?.name || '');
+        }, 300);
+      }
 
       // Update ghost text to top suggestion
       if (suggs.length > 0 && result.query) {
@@ -377,26 +387,46 @@ export function useAutocompleteV2(
     }
   });
 
+  async function triggerAIFallback(partialInput: string, query: string, commandContext: string): Promise<void> {
+    try {
+      const result = await invoke<string>('predict_inline_completion', {
+        commandContext,
+        partialInput,
+        query,
+      });
+
+      if (result && result.length > 0) {
+        setSuggestions((prev) => {
+          // Only add if not already present
+          if (prev.some((s) => s.value === result)) return prev;
+
+          const aiSugg: Suggestion = {
+            display: result,
+            value: result,
+            type: 'ai' as any,
+            icon: '✨',
+            description: `AI Suggestion for ${commandContext}`,
+          };
+          return [...prev, aiSugg].slice(0, MAX_SUGGESTIONS);
+        });
+        setMenuVisible(true);
+        if (selectedIndex() === -1) setSelectedIndex(0);
+      }
+    } catch {
+      // Silently fail
+    }
+  }
+
   async function triggerPrediction(lastCommands: string[], cwd: string): Promise<void> {
     // Cooldown: don't spam Groq API
     const now = Date.now();
     if (now - lastPredictionTime < PREDICTION_COOLDOWN_MS) return;
     lastPredictionTime = now;
 
-    // Gather file snapshot (top 10 names)
-    let lsSnapshot = '';
-    try {
-      const nodes = await invoke<FileNode[]>('read_dir', { path: cwd || '.' });
-      lsSnapshot = nodes.slice(0, 10).map((n) => n.name).join(', ');
-    } catch {
-      // Silently continue without file context
-    }
-
     try {
       const result = await invoke<string>('predict_next_command', {
         history: lastCommands.slice(-5),
         cwd,
-        lsSnapshot,
       });
       setPredictionText(result);
       // If input is still empty, show prediction as ghost text

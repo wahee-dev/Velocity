@@ -14,6 +14,8 @@ import {
   X,
   GitBranch,
   Folder,
+  Hexagon,
+  FileDigit,
 } from "lucide-solid";
 import { AgentBlock } from "../AgentBlock/AgentBlock";
 import { BlockView } from "../BlockView/BlockView";
@@ -201,9 +203,7 @@ export function TerminalPane(props: TerminalPaneProps) {
         : undefined,
     });
 
-    requestAnimationFrame(() => inputRef?.focus());
-
-    // Trigger next-command prediction on successful exit
+    // Trigger next-command prediction on successful exit IMMEDIATELY
     if ((status === "success" || ec === 0) && !inputValue().trim()) {
       const recentCommands = blocks()
         .filter((b) => b.command && b.status === "success")
@@ -212,6 +212,8 @@ export function TerminalPane(props: TerminalPaneProps) {
       void autocompleteV2.triggerPrediction(recentCommands, autocompletePath());
       ghostCmd.triggerPrediction();
     }
+
+    requestAnimationFrame(() => inputRef?.focus());
   }
 
   // PTY initialization
@@ -316,6 +318,15 @@ export function TerminalPane(props: TerminalPaneProps) {
         if (event.payload.sessionId !== ptySessionId) return;
 
         setSessionPath(props.sessionId, event.payload.cwd);
+        
+        // If the CWD changes, the shell is by definition back at the prompt.
+        // Force-finalize any currently running block.
+        const running = activeBlockMemo();
+        if (running) {
+          finalizeRunningBlock();
+          return;
+        }
+        
         if (activeBlock) promptDetector?.noteCwdChange();
       });
 
@@ -546,6 +557,10 @@ export function TerminalPane(props: TerminalPaneProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent) {
+    if (event.key === "Tab") {
+      event.preventDefault();
+    }
+
     // Track cursor position for navigation keys
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
       const target = event.currentTarget as HTMLInputElement;
@@ -678,10 +693,10 @@ export function TerminalPane(props: TerminalPaneProps) {
     <div class={`terminal-pane ${isActive() ? "active" : ""}`}>
       <div class="pane-header">
         <div class="pane-actions">
-          <button class="pane-btn" title={`Session ${health() ? (health().isIdle ? "idle" : "active") : ""} — ${fullDisplayPath()}`}>
+          <button class="pane-btn" tabindex="-1" title={`Session ${health() ? (health().isIdle ? "idle" : "active") : ""} — ${fullDisplayPath()}`}>
             <MoreVertical size={13} />
           </button>
-          <button class="pane-btn pane-btn-close" onClick={handleClosePane} title="Close pane">
+          <button class="pane-btn pane-btn-close" tabindex="-1" onClick={handleClosePane} title="Close pane">
             <X size={13} />
           </button>
         </div>
@@ -741,7 +756,10 @@ export function TerminalPane(props: TerminalPaneProps) {
 
       <div class="pane-footer">
         <div class="status-bar">
-          <span class="version-badge">v25.8.1</span>
+          <div class="version-badge">
+            <Hexagon size={12} fill="currentColor" fill-opacity="0.1" />
+            <span>v25.8.1</span>
+          </div>
           <div class="path-info">
             <Folder size={12} />
             <span>{fullDisplayPath()}</span>
@@ -750,15 +768,19 @@ export function TerminalPane(props: TerminalPaneProps) {
             <GitBranch size={12} />
             <span class="branch-name">{gitStatus().branch}</span>
           </div>
-          <span class="git-changes">+/- {gitStatus().changes}</span>
-          <Show when={hasRunningAgentTask()}>
+          <Show when={gitStatus().changes !== 0}>
+            <div class="git-changes">
+              <FileDigit size={12} />
+              <span>{gitStatus().changes > 0 ? `+${gitStatus().changes}` : gitStatus().changes}</span>
+            </div>
+          </Show>
+          <Show when={hasRunningAgentTask()}> 
             <span class="running-hint status-hint-agent">
               <span class="running-indicator-inline" />
-              <span>agent active</span>
+              <span>agent active</span>       
             </span>
           </Show>
         </div>
-
         <div
           class="input-container"
           onMouseDown={(event) => event.stopPropagation()}
@@ -781,11 +803,20 @@ export function TerminalPane(props: TerminalPaneProps) {
               ref={inputRef!}
               type="text"
               class="command-input"
-              autocomplete="off"
+              autocomplete="nope"
               autocorrect="off"
               autocapitalize="off"
               spellcheck={false}
-              placeholder={hasRunningCommand() ? "Command running... type next command" : "Warp anything e.g. Create unit tests for my authentication service"}
+              data-form-type="other"
+              data-1p-ignore
+              data-lpignore="true"
+              placeholder={
+                hasRunningCommand() 
+                  ? "Command running... type next command" 
+                  : (ghostCmd.ghostCommand() || autocompleteV2.ghostText() || autocompleteV2.menuVisible() || ghostCmd.isPredicting())
+                    ? ""
+                    : "Warp anything e.g. Create unit tests for my authentication service"
+              }
               value={inputValue()}
               onInput={(e) => {
                 const target = e.target as HTMLInputElement;
@@ -808,7 +839,7 @@ export function TerminalPane(props: TerminalPaneProps) {
           <div class="input-hint">
             <Show when={hasRunningCommand()} fallback={
               <Show when={hasRunningAgentTask()} fallback={
-                <Show when={ghostCmd.isPredicting()} fallback={
+                <Show when={ghostCmd.isPredicting() && !inputValue().trim()} fallback={
                   <Show when={ghostCmd.ghostCommand()} fallback={
                     <Show when={autocompleteV2.ghostText()} fallback={
                       <>

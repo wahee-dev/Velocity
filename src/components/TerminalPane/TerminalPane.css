@@ -77,21 +77,12 @@
 }
 
 .agent-blocks-layer {
-  position: absolute;
-  right: 18px;
-  bottom: 20px;
-  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: min(420px, calc(100% - 36px));
-  max-height: calc(100% - 40px);
+  width: 100%;
   overflow-y: auto;
-  pointer-events: none;
-}
-
-.agent-blocks-layer > * {
-  pointer-events: auto;
+  flex-shrink: 0;
 }
 
 @keyframes pulse-dot {
@@ -102,47 +93,51 @@
 /* ── Footer / Input — pinned to bottom of stack ── */
 .pane-footer {
   flex-shrink: 0;
-  border-top: 1px solid var(--border-subtle);
   background: #000000;
   position: relative;
   z-index: 4;
   width: 100%;
   overflow: hidden;
+  padding-bottom: 12px;
 }
 
 .status-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 14px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+  padding: 12px 18px 6px 18px;
+  background: transparent;
   min-width: 0;
   overflow: hidden;
-  height: 28px;
+  font-family: var(--font-mono);
 }
 
 .version-badge {
-  background: var(--accent-orange);
-  color: #000;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 3px;
-  letter-spacing: 0.02em;
+  background: rgba(74, 222, 128, 0.08);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
 }
 
 .path-info {
   display: flex;
   align-items: center;
-  gap: 5px;
-  color: var(--text-muted);
+  gap: 6px;
+  color: var(--text-secondary);
   font-size: 11px;
-  background: transparent;
-  padding: 0;
-  border-radius: 0;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   min-width: 0;
-  max-width: 280px;
+  max-width: 400px;
 }
 
 .path-info span {
@@ -154,18 +149,31 @@
 .git-info {
   display: flex;
   align-items: center;
-  gap: 3px;
-  color: var(--accent-purple);
+  gap: 5px;
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.08);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(74, 222, 128, 0.2);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .branch-name {
-  color: var(--accent-purple);
+  color: inherit;
 }
 
 .git-changes {
-  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .status-hint-agent {
@@ -173,7 +181,7 @@
 }
 
 .input-container {
-  padding: 14px 18px;
+  padding: 6px 18px 4px 18px;
   position: relative;
   z-index: 10;
 }
@@ -198,16 +206,16 @@
 .command-input-shell {
   position: relative;
   width: 100%;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  transition: none;
 }
 
 .command-input-shell:focus-within {
-  border-color: var(--accent-blue);
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .command-ghost {
@@ -215,7 +223,7 @@
   inset: 0;
   display: flex;
   align-items: center;
-  padding: 12px 16px;
+  padding: 0;
   pointer-events: none;
   white-space: pre;
   overflow: hidden;
@@ -252,24 +260,24 @@
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 14px;
-  caret-color: var(--text-primary);
+  caret-color: #3b82f6;
   outline: none;
-  padding: 12px 16px;
+  padding: 0;
 }
 
 .command-input::placeholder {
-  color: var(--text-muted);
+  color: var(--text-placeholder);
 }
 
 .input-hint {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 7px;
+  margin-top: 10px;
   font-size: 11px;
   color: var(--text-muted);
 }
 
 .hint-action {
-  color: var(--accent-blue);
+  color: var(--text-muted);
 }

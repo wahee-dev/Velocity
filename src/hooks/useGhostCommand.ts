@@ -66,17 +66,10 @@ export function useGhostCommand(
     setIsPredicting(true);
     abortController = new AbortController();
 
-    // Gather file snapshot for context
-    invoke<string[]>('read_dir', { path: currentCwd || '.' })
-      .then((nodes) => {
-        if (abortController?.signal.aborted) return;
-
-        return invoke<string>('predict_next_command', {
-          history: recentCommands,
-          cwd: currentCwd,
-          lsSnapshot: nodes.slice(0, 10).map((n) => n.name).join(', '),
-        });
-      })
+    invoke<string>('predict_next_command', {
+      history: recentCommands,
+      cwd: currentCwd,
+    })
       .then((result) => {
         if (abortController?.signal.aborted) return;
 

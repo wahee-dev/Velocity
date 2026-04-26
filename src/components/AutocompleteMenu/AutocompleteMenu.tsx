@@ -23,6 +23,7 @@ const TYPE_ICONS: Record<string, string> = {
   arg: '◇',
   file: '📄',
   history: '🕐',
+  ai: '✨',
 };
 
 export function AutocompleteMenu(props: AutocompleteMenuProps) {

@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter};
 
 const GROQ_API_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
+const GROQ_PREDICTION_MODEL: &str = "llama-3.1-8b-instant";
 const GROQ_API_KEY_ENV: &str = "GROQ_API_KEY";
 const MAX_AGENT_ITERATIONS: usize = 8;
 const MAX_CONTEXT_DEPTH: usize = 4;
@@ -504,6 +505,60 @@ pub struct AgentConfirmationRequest {
 }
 
 #[tauri::command]
+pub async fn predict_inline_completion(
+    command_context: String,
+    partial_input: String,
+    query: String,
+) -> Result<String, String> {
+    let api_key = groq_api_key()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to build reqwest client: {}", e))?;
+
+    let system_prompt = format!(
+        "You are a terminal autocomplete engine. The user is typing the command '{}'. \
+        Suggest only the single most likely subcommand, flag, or argument to complete '{}'. \
+        Output only the completion text. No prose. No markdown. If you cannot suggest a high-confidence completion, return an empty string.",
+        command_context, query
+    );
+
+    let user_content = format!("Input: {} | Query: {}", partial_input, query);
+
+    let messages = vec![
+        GroqChatMessage {
+            role: "system".to_string(),
+            content: system_prompt,
+        },
+        GroqChatMessage {
+            role: "user".to_string(),
+            content: user_content,
+        },
+    ];
+
+    let request = GroqChatRequest {
+        model: GROQ_PREDICTION_MODEL,
+        temperature: 0.1,
+        messages,
+    };
+
+    let response = client
+        .post(GROQ_API_URL)
+        .bearer_auth(&api_key)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to reach Groq: {}", e))?;
+
+    let parsed: GroqChatResponse = response.json().await.map_err(|e| e.to_string())?;
+    
+    Ok(parsed.choices.into_iter().next()
+        .and_then(|c| c.message.content)
+        .map(|c| c.trim().trim_matches('`').to_string())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
 pub async fn ai_prompt(prompt: String) -> Result<String, String> {
     let response = run_simple_completion(
         "You are Velocity Agent. Respond like a concise coding assistant.",
@@ -524,13 +579,23 @@ pub async fn ai_to_command(natural_language: String) -> Result<String, String> {
 pub async fn predict_next_command(
     history: Vec<String>,
     cwd: String,
-    ls_snapshot: String,
 ) -> Result<String, String> {
     let api_key = groq_api_key()?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("Failed to build reqwest client: {}", e))?;
+
+    // Gather file snapshot in Rust to save an RTT
+    let ls_snapshot = match std::fs::read_dir(&cwd) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .take(10)
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => String::new(),
+    };
 
     let user_content = format!(
         "Files: {} | CWD: {} | History: {} | Suggest next command:",
@@ -550,9 +615,8 @@ pub async fn predict_next_command(
         },
     ];
 
-    // Use llama-3.1-8b-instant for fast predictions (~100-200ms)
     let request = GroqChatRequest {
-        model: "llama-3.1-8b-instant",
+        model: GROQ_PREDICTION_MODEL,
         temperature: 0.1,
         messages,
     };
