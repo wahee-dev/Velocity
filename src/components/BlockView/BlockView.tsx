@@ -1,6 +1,6 @@
 /* @solid */
 import { createEffect, createMemo, Show, For } from "solid-js";
-import type { CommandBlock } from "../../types";
+import type { AgentTask, CommandBlock } from "../../types";
 import { CompletedBlock } from "./CompletedBlock";
 import "./BlockView.css";
 import "./CompletedBlock.css";
@@ -12,14 +12,42 @@ interface BlockViewProps {
   activeBlockNode?: () => import("solid-js").JSX.Element;
   liveOutputVersion: number;
   onCopyCommand: (command: string) => void;
+  agentTasks?: AgentTask[];
+  renderAgentTask?: (task: AgentTask) => import("solid-js").JSX.Element;
 }
 
 export function BlockView(props: BlockViewProps) {
   let scrollRef: HTMLDivElement | undefined;
 
-  const completedBlocks = createMemo(
-    () => props.blocks.filter((block) => block.status !== "running"),
-  );
+  const feedItems = createMemo(() => {
+    const commandItems = props.blocks
+      .filter((block) => block.status !== "running")
+      .map((block) => ({
+        id: `command-${block.id}`,
+        type: "command" as const,
+        timestamp: block.startedAt ?? block.timestamp.getTime(),
+        block,
+      }));
+
+    const activeCommandItem = props.activeBlock
+      ? [{
+          id: `command-${props.activeBlock.id}`,
+          type: "active-command" as const,
+          timestamp: props.activeBlock.startedAt ?? props.activeBlock.timestamp.getTime(),
+          block: props.activeBlock,
+        }]
+      : [];
+
+    const agentItems = (props.agentTasks ?? []).map((task) => ({
+      id: `agent-${task.id}`,
+      type: "agent" as const,
+      timestamp: task.startedAt,
+      task,
+    }));
+
+    return [...commandItems, ...activeCommandItem, ...agentItems]
+      .sort((a, b) => a.timestamp - b.timestamp);
+  });
 
   // Auto-scroll to bottom when blocks change or live output updates
   createEffect(() => {
@@ -35,7 +63,7 @@ export function BlockView(props: BlockViewProps) {
     }
   });
 
-  const isEmpty = () => completedBlocks().length === 0 && !props.activeBlock;
+  const isEmpty = () => feedItems().length === 0;
 
   return (
     <Show
@@ -51,18 +79,20 @@ export function BlockView(props: BlockViewProps) {
     >
       <div class="block-view" ref={scrollRef!}>
         <div class="block-list">
-          <For each={completedBlocks()}>
-            {(block) => (
-              <CompletedBlock
-                block={block}
-                onCopyCommand={props.onCopyCommand}
-              />
+          <For each={feedItems()}>
+            {(item) => (
+              item.type === "agent"
+                ? props.renderAgentTask?.(item.task)
+                : item.type === "active-command"
+                  ? props.activeBlockNode?.()
+                  : (
+                      <CompletedBlock
+                        block={item.block}
+                        onCopyCommand={props.onCopyCommand}
+                      />
+                    )
             )}
           </For>
-
-          <Show when={props.activeBlock && props.activeBlockNode}>
-            {props.activeBlockNode?.()}
-          </Show>
         </div>
       </div>
     </Show>

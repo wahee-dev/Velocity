@@ -168,7 +168,7 @@ export function TerminalPane(props: TerminalPaneProps) {
   });
 
   const hasRunningCommand = () => activeBlockMemo() !== null;
-  const visibleAgentTasks = () => agentTasks().slice(-3).reverse();
+  const visibleAgentTasks = () => agentTasks().slice(-3);
   const fullDisplayPath = () => session()?.path ?? "";
 
   // Sync active block ref
@@ -759,6 +759,17 @@ export function TerminalPane(props: TerminalPaneProps) {
           activeBlock={activeBlockMemo()}
           liveOutputVersion={liveOutputVersion()}
           onCopyCommand={handleCopyCommand}
+          agentTasks={visibleAgentTasks()}
+          renderAgentTask={(task) => (
+            <AgentBlock
+              key={task.id}
+              task={task}
+              onUndo={handleUndoAgentTask}
+              onRunCommand={handleRunAgentCommand}
+              onRefine={handleRefineAgentTask}
+              onCancel={handleCancelAgentTask}
+            />
+          )}
           activeBlockNode={
             activeBlockMemo()
               ? () => (
@@ -771,21 +782,6 @@ export function TerminalPane(props: TerminalPaneProps) {
               : undefined
           }
         />
-
-        <Show when={visibleAgentTasks().length > 0}>
-          <div class="agent-blocks-layer">
-            {visibleAgentTasks().map((task) => (
-              <AgentBlock
-                key={task.id}
-                task={task}
-                onUndo={handleUndoAgentTask}
-                onRunCommand={handleRunAgentCommand}
-                onRefine={handleRefineAgentTask}
-                onCancel={handleCancelAgentTask}
-              />
-            ))}
-          </div>
-        </Show>
       </div>
 
       <div class="pane-footer">
