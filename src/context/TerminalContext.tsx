@@ -36,6 +36,7 @@ function createDefaultSession(id: string, path: string): TerminalSession {
     blocks: [],
     agentTasks: [],
     inputValue: "",
+    selectedAgentModel: "llama-3.3-70b-versatile",
     showWelcome: true,
     isActive: false,
     gitStatus: { branch: "main", changes: 0 },
@@ -121,6 +122,7 @@ interface TerminalContextValue {
     >
   ) => void;
   setInputValue: (sessionId: string, value: string) => void;
+  setSelectedAgentModel: (sessionId: string, model: string) => void;
   setShowWelcome: (sessionId: string, show: boolean) => void;
   setGitStatus: (
     sessionId: string,
@@ -135,6 +137,7 @@ interface TerminalContextValue {
     cwd: string
   ) => Promise<AgentTask>;
   revertAgentTask: (taskId: string) => Promise<AgentTask>;
+  cancelAgentTask: (taskId: string) => Promise<AgentTask>;
 }
 
 const Ctx = createContext<TerminalContextValue | null>(null);
@@ -344,6 +347,9 @@ export function TerminalProvider(props: { children: any }) {
   const setInputValue = (sessionId: string, value: string): void =>
     updateSessionField(state, setState, sessionId, "inputValue", value);
 
+  const setSelectedAgentModel = (sessionId: string, model: string): void =>
+    updateSessionField(state, setState, sessionId, "selectedAgentModel", model);
+
   const setShowWelcome = (sessionId: string, show: boolean): void =>
     updateSessionField(state, setState, sessionId, "showWelcome", show);
 
@@ -413,6 +419,7 @@ export function TerminalProvider(props: { children: any }) {
       sessionId,
       prompt,
       cwd,
+      model: state().sessions.get(sessionId)?.selectedAgentModel,
     });
 
     // Remove pending placeholder, replace with real task (only if not already added by events)
@@ -442,6 +449,12 @@ export function TerminalProvider(props: { children: any }) {
     return task;
   };
 
+  const cancelAgentTask = async (taskId: string): Promise<AgentTask> => {
+    const task = await invoke<AgentTask>("cancel_agent_task", { taskId });
+    upsertAgentTask(task.sessionId, task);
+    return task;
+  };
+
   const value: TerminalContextValue = {
     state,
     setState,
@@ -454,6 +467,7 @@ export function TerminalProvider(props: { children: any }) {
     updateBlock,
     setBlockOutput,
     setInputValue,
+    setSelectedAgentModel,
     setShowWelcome,
     setGitStatus,
     gcBlocks,
@@ -461,6 +475,7 @@ export function TerminalProvider(props: { children: any }) {
     respondConfirmation,
     startAgentTask,
     revertAgentTask,
+    cancelAgentTask,
   };
 
   return <Ctx.Provider value={value}>{props.children}</Ctx.Provider>;

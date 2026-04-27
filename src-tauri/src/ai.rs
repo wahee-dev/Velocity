@@ -9,6 +9,11 @@ use tauri::{AppHandle, Emitter};
 const GROQ_API_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
 const GROQ_PREDICTION_MODEL: &str = "llama-3.1-8b-instant";
+const AVAILABLE_AGENT_MODELS: &[&str] = &[
+    GROQ_MODEL,
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+];
 const GROQ_API_KEY_ENV: &str = "GROQ_API_KEY";
 const MAX_AGENT_ITERATIONS: usize = 8;
 const MAX_CONTEXT_DEPTH: usize = 4;
@@ -101,6 +106,7 @@ pub enum AgentTaskStatus {
     Completed,
     Error,
     Reverted,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +175,8 @@ struct AgentTaskRecord {
     root_cwd: PathBuf,
     backup_dir: PathBuf,
     file_backups: HashMap<String, FileBackupRecord>,
+    model: String,
+    cancelled: bool,
 }
 
 pub struct AgentManager {
@@ -183,12 +191,13 @@ pub struct AgentManager {
 struct WorkspaceContext {
     cwd: String,
     package_scripts: Vec<String>,
+    file_tree: String,
     files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct GroqChatRequest {
-    model: &'static str,
+    model: String,
     temperature: f32,
     messages: Vec<GroqChatMessage>,
 }
@@ -260,6 +269,7 @@ impl AgentManager {
         session_id: String,
         prompt: String,
         cwd: PathBuf,
+        model: Option<String>,
     ) -> Result<AgentTaskSnapshot, String> {
         let root_cwd = cwd
             .canonicalize()
@@ -267,6 +277,7 @@ impl AgentManager {
         let started_at = now_millis();
         let task_id = uuid::Uuid::new_v4().to_string();
         let backup_dir = self.backups_root.join(&task_id);
+        let selected_model = normalize_agent_model(model);
         std::fs::create_dir_all(&backup_dir)
             .map_err(|e| format!("Failed to prepare backup directory: {}", e))?;
 
@@ -299,6 +310,8 @@ impl AgentManager {
                 root_cwd,
                 backup_dir,
                 file_backups: HashMap::new(),
+                model: selected_model,
+                cancelled: false,
             },
         );
 
@@ -388,10 +401,19 @@ pub fn classify_terminal_input(input: String, cwd: String) -> Result<InputIntent
 }
 
 #[tauri::command]
+pub fn get_available_agent_models() -> Vec<String> {
+    AVAILABLE_AGENT_MODELS
+        .iter()
+        .map(|model| (*model).to_string())
+        .collect()
+}
+
+#[tauri::command]
 pub async fn start_agent_task(
     session_id: String,
     prompt: String,
     cwd: String,
+    model: Option<String>,
     app: AppHandle,
     agent_state: tauri::State<'_, Arc<Mutex<AgentManager>>>,
 ) -> Result<AgentTaskSnapshot, String> {
@@ -401,7 +423,7 @@ pub async fn start_agent_task(
 
     let snapshot = {
         let mut guard = agent_state.lock().map_err(|e| e.to_string())?;
-        guard.create_task(session_id, prompt, PathBuf::from(cwd))?
+        guard.create_task(session_id, prompt, PathBuf::from(cwd), model)?
     };
 
     emit_task_update(&app, &snapshot);
@@ -416,6 +438,54 @@ pub async fn start_agent_task(
         }
     });
 
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn cancel_agent_task(
+    task_id: String,
+    app: AppHandle,
+    agent_state: tauri::State<'_, Arc<Mutex<AgentManager>>>,
+) -> Result<AgentTaskSnapshot, String> {
+    let snapshot = {
+        let mut guard = agent_state.lock().map_err(|e| e.to_string())?;
+        let snapshot = {
+            let record = guard
+                .tasks
+                .get_mut(&task_id)
+                .ok_or_else(|| format!("Agent task '{}' not found", task_id))?;
+
+            record.cancelled = true;
+            record.snapshot.status = AgentTaskStatus::Cancelled;
+            record.snapshot.summary = Some("Agent task cancelled".to_string());
+            record.snapshot.error = None;
+            record.snapshot.last_tool = None;
+            record.snapshot.can_undo = !record.snapshot.changes.is_empty();
+            finish_running_step(
+                record,
+                AgentStepStatus::Error,
+                Some("Cancelled by user".to_string()),
+            );
+            record.snapshot.updated_at = now_millis();
+            record.snapshot.clone()
+        };
+
+        let matching_ids: Vec<String> = guard
+            .pending_confirmations
+            .keys()
+            .filter(|id| id.starts_with(&format!("confirm-{}-", task_id)))
+            .cloned()
+            .collect();
+        for confirm_id in matching_ids {
+            if let Some(tx) = guard.pending_confirmations.remove(&confirm_id) {
+                let _ = tx.send(false);
+            }
+        }
+
+        snapshot
+    };
+
+    emit_task_update(&app, &snapshot);
     Ok(snapshot)
 }
 
@@ -537,7 +607,7 @@ pub async fn predict_inline_completion(
     ];
 
     let request = GroqChatRequest {
-        model: GROQ_PREDICTION_MODEL,
+        model: GROQ_PREDICTION_MODEL.to_string(),
         temperature: 0.1,
         messages,
     };
@@ -616,7 +686,7 @@ pub async fn predict_next_command(
     ];
 
     let request = GroqChatRequest {
-        model: GROQ_PREDICTION_MODEL,
+        model: GROQ_PREDICTION_MODEL.to_string(),
         temperature: 0.1,
         messages,
     };
@@ -774,7 +844,7 @@ async fn run_agent_task(
 ) -> Result<(), String> {
     let api_key = groq_api_key()?;
 
-    let (client, prompt, cwd) = {
+    let (client, prompt, cwd, model) = {
         let guard = manager.lock().map_err(|e| e.to_string())?;
         let record = guard
             .tasks
@@ -784,6 +854,7 @@ async fn run_agent_task(
             guard.client.clone(),
             record.snapshot.prompt.clone(),
             record.root_cwd.clone(),
+            record.model.clone(),
         )
     };
 
@@ -808,7 +879,9 @@ async fn run_agent_task(
     ];
 
     for _ in 0..MAX_AGENT_ITERATIONS {
-        let response_text = groq_chat_completion(&client, &api_key, messages.clone()).await?;
+        ensure_task_not_cancelled(&manager, task_id)?;
+        let response_text = groq_chat_completion(&client, &api_key, &model, messages.clone()).await?;
+        ensure_task_not_cancelled(&manager, task_id)?;
         messages.push(GroqChatMessage {
             role: "assistant".to_string(),
             content: response_text.clone(),
@@ -819,6 +892,9 @@ async fn run_agent_task(
                 let (label, detail, last_tool) = tool_metadata(&tool_call);
 
                 update_task(&manager, task_id, &app, |record| {
+                    if record.cancelled {
+                        return Err("Agent task cancelled".to_string());
+                    }
                     finish_running_step(record, AgentStepStatus::Completed, None);
                     record.snapshot.last_tool = Some(last_tool.to_string());
                     record.snapshot.summary = Some(label.to_string());
@@ -1160,6 +1236,35 @@ where
     Ok(())
 }
 
+fn normalize_agent_model(model: Option<String>) -> String {
+    let requested = model.unwrap_or_else(|| GROQ_MODEL.to_string());
+    if AVAILABLE_AGENT_MODELS
+        .iter()
+        .any(|available| *available == requested)
+    {
+        requested
+    } else {
+        GROQ_MODEL.to_string()
+    }
+}
+
+fn ensure_task_not_cancelled(
+    manager: &Arc<Mutex<AgentManager>>,
+    task_id: &str,
+) -> Result<(), String> {
+    let guard = manager.lock().map_err(|e| e.to_string())?;
+    let record = guard
+        .tasks
+        .get(task_id)
+        .ok_or_else(|| format!("Agent task '{}' not found", task_id))?;
+
+    if record.cancelled || matches!(record.snapshot.status, AgentTaskStatus::Cancelled) {
+        return Err("Agent task cancelled".to_string());
+    }
+
+    Ok(())
+}
+
 fn fail_task(
     manager: &Arc<Mutex<AgentManager>>,
     app: &AppHandle,
@@ -1167,6 +1272,9 @@ fn fail_task(
     error: String,
 ) -> Result<(), String> {
     update_task(manager, task_id, app, |record| {
+        if record.cancelled || matches!(record.snapshot.status, AgentTaskStatus::Cancelled) {
+            return Ok(());
+        }
         finish_running_step(record, AgentStepStatus::Error, Some(error.clone()));
         record.snapshot.status = AgentTaskStatus::Error;
         record.snapshot.summary = Some("Agent task failed".to_string());
@@ -1199,6 +1307,7 @@ fn finish_running_step(
 fn build_workspace_context(root: &Path) -> Result<WorkspaceContext, String> {
     let mut seen_count = 0usize;
     let files = collect_workspace_files(root, 0, &mut seen_count)?;
+    let file_tree = render_file_tree(&files);
     let package_scripts = if let Some(package_json) = find_nearest_package_json(root) {
         read_package_scripts(&package_json)?
     } else {
@@ -1208,8 +1317,48 @@ fn build_workspace_context(root: &Path) -> Result<WorkspaceContext, String> {
     Ok(WorkspaceContext {
         cwd: root.to_string_lossy().to_string(),
         package_scripts,
+        file_tree,
         files,
     })
+}
+
+fn render_file_tree(files: &[String]) -> String {
+    let mut tree = String::new();
+    let mut last_dirs: Vec<String> = Vec::new();
+
+    for file in files {
+        let parts: Vec<&str> = file.split('/').filter(|part| !part.is_empty()).collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let dir_count = parts.len().saturating_sub(1);
+        let mut common = 0usize;
+        while common < dir_count
+            && common < last_dirs.len()
+            && last_dirs[common] == parts[common]
+        {
+            common += 1;
+        }
+
+        for depth in common..dir_count {
+            tree.push_str(&"  ".repeat(depth));
+            tree.push_str(parts[depth]);
+            tree.push_str("/\n");
+        }
+
+        tree.push_str(&"  ".repeat(dir_count));
+        tree.push_str(parts[dir_count]);
+        tree.push('\n');
+
+        last_dirs = parts[..dir_count].iter().map(|part| (*part).to_string()).collect();
+    }
+
+    if tree.is_empty() {
+        "(no files found)".to_string()
+    } else {
+        tree
+    }
 }
 
 fn collect_workspace_files(
@@ -1537,6 +1686,8 @@ fn velocity_agent_system_prompt() -> String {
         "{\"type\":\"final\",\"message\":\"what you changed, tested, or need from the user\"}",
         "Rules:",
         "- Prefer read_file before write_file unless the change is trivial from context.",
+        "- The user message includes file_tree and files. For read_file, use only exact relative paths present there.",
+        "- If a path is not in file_tree/files, inspect the tree/list first or create it with write_file only when the user asked for a new file.",
         "- Use write_file for file edits. Do not rely on execute_command to mutate files.",
         "- Keep commands non-interactive and non-destructive.",
         "- Paths should stay inside the provided working directory.",
@@ -1658,10 +1809,11 @@ fn extract_json(content: &str) -> Option<String> {
 async fn groq_chat_completion(
     client: &reqwest::Client,
     api_key: &str,
+    model: &str,
     messages: Vec<GroqChatMessage>,
 ) -> Result<String, String> {
     let request = GroqChatRequest {
-        model: GROQ_MODEL,
+        model: model.to_string(),
         temperature: 0.1,
         messages,
     };
@@ -1707,6 +1859,7 @@ async fn run_simple_completion(system_prompt: &str, user_prompt: &str) -> Result
     groq_chat_completion(
         &client,
         &api_key,
+        GROQ_MODEL,
         vec![
             GroqChatMessage {
                 role: "system".to_string(),

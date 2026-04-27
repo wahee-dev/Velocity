@@ -36,7 +36,7 @@ import {
   wrapInteractiveCommand,
 } from "../../utils/exitMarker";
 import { createPromptDetector, type PromptDetector } from "../../utils/promptDetector";
-import type { CommandBlock, CommandBlockStatus, SessionHealthMetrics, TerminalInputIntent } from "../../types";
+import type { AgentTask, CommandBlock, CommandBlockStatus, SessionHealthMetrics, TerminalInputIntent } from "../../types";
 import "./TerminalPane.css";
 
 interface TerminalPaneProps {
@@ -71,8 +71,10 @@ export function TerminalPane(props: TerminalPaneProps) {
     appendBlock,
     removeSession,
     revertAgentTask,
+    cancelAgentTask,
     setBlockOutput,
     setInputValue,
+    setSelectedAgentModel,
     setSessionPath,
     startAgentTask,
     updateBlock,
@@ -98,12 +100,14 @@ export function TerminalPane(props: TerminalPaneProps) {
 
   const [liveOutputVersion, setLiveOutputVersion] = createSignal(0);
   const [health, setHealth] = createSignal<SessionHealthMetrics | null>(null);
+  const [agentModels, setAgentModels] = createSignal<string[]>(["llama-3.3-70b-versatile"]);
 
   const outputCapture = createOutputCapture();
 
   const blocks = () => session()?.blocks ?? [];
   const agentTasks = () => session()?.agentTasks ?? [];
   const inputValue = () => session()?.inputValue ?? "";
+  const selectedAgentModel = () => session()?.selectedAgentModel ?? agentModels()[0] ?? "llama-3.3-70b-versatile";
   const gitStatus = () => session()?.gitStatus ?? { branch: "main", changes: 0 };
   const isActive = () => session()?.isActive ?? false;
   const autocompletePath = () => session()?.path ?? "";
@@ -115,6 +119,11 @@ export function TerminalPane(props: TerminalPaneProps) {
   // Register input element for menu positioning
   onMount(() => {
     // Will be set when inputRef is available
+    invoke<string[]>("get_available_agent_models")
+      .then((models) => {
+        if (models.length > 0) setAgentModels(models);
+      })
+      .catch((error) => console.error("[TerminalPane] get_available_agent_models failed:", error));
   });
   createEffect(() => {
     // Keep input element registered
@@ -465,10 +474,9 @@ export function TerminalPane(props: TerminalPaneProps) {
     }
   }
 
-  async function handleExecuteCommand(forceAgent: boolean = false) {
-    if (!inputValue().trim()) return;
-
-    const submitted = inputValue().trim();
+  async function executeSubmittedCommand(submitted: string, forceAgent: boolean = false) {
+    if (!submitted.trim()) return;
+    submitted = submitted.trim();
     setInputValue(props.sessionId, "");
 
     const explicitAgentPrompt = submitted === "/agent"
@@ -536,11 +544,31 @@ export function TerminalPane(props: TerminalPaneProps) {
     }
   }
 
+  async function handleExecuteCommand(forceAgent: boolean = false) {
+    await executeSubmittedCommand(inputValue(), forceAgent);
+  }
+
   async function handleUndoAgentTask(taskId: string) {
     try {
       await revertAgentTask(taskId);
     } catch (error) {
       console.error("[TerminalPane] revert_agent_task failed:", error);
+    }
+  }
+
+  function handleRunAgentCommand(command: string) {
+    void executeSubmittedCommand(command);
+  }
+
+  async function handleRefineAgentTask(task: AgentTask, feedback: string) {
+    await handleStartAgentTask(`Refine task "${task.prompt}" with this feedback: ${feedback}`);
+  }
+
+  async function handleCancelAgentTask(taskId: string) {
+    try {
+      await cancelAgentTask(taskId);
+    } catch (error) {
+      console.error("[TerminalPane] cancel_agent_task failed:", error);
     }
   }
 
@@ -557,30 +585,7 @@ export function TerminalPane(props: TerminalPaneProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent) {
-    if (event.key === "Tab") {
-      event.preventDefault();
-    }
-
-    // Track cursor position for navigation keys
-    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-      const target = event.currentTarget as HTMLInputElement;
-      // Update after browser processes the key
-      requestAnimationFrame(() => {
-        setCursorPos(target.selectionStart ?? inputValue().length);
-      });
-    }
-
-    // Delegate to V2 autocomplete handler first
-    const autocompleteHandled = autocompleteV2.handleKeyDown(event);
-    if (autocompleteHandled) {
-      // Tab was handled by the hook — apply the accepted suggestion value
-      if (event.key === "Tab") {
-        handleAcceptSuggestionV2();
-      }
-      return;
-    }
-
-    // Tab — accept AI ghost command when input empty, ghost exists, menu not visible
+    // 1. Prioritize AI Ghost Command (Acceptance at launch)
     if (
       event.key === "Tab" &&
       !inputValue().trim() &&
@@ -595,6 +600,28 @@ export function TerminalPane(props: TerminalPaneProps) {
           if (!inputRef) return;
           inputRef.setSelectionRange(accepted.length, accepted.length);
         });
+      }
+      return;
+    }
+
+    if (event.key === "Tab") {
+      event.preventDefault();
+    }
+
+    // Track cursor position for navigation keys
+    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      const target = event.currentTarget as HTMLInputElement;
+      // Update after browser processes the key
+      requestAnimationFrame(() => {
+        setCursorPos(target.selectionStart ?? inputValue().length);
+      });
+    }
+
+    // Delegate to V2 autocomplete handler
+    const autocompleteHandled = autocompleteV2.handleKeyDown(event);
+    if (autocompleteHandled) {
+      if (event.key === "Tab") {
+        handleAcceptSuggestionV2();
       }
       return;
     }
@@ -708,7 +735,7 @@ export function TerminalPane(props: TerminalPaneProps) {
         data-terminal-id={props.sessionId}
         onClick={(event) => {
           const target = event.target as HTMLElement;
-          if (target.closest(".pane-footer")) return;
+          if (target.closest(".pane-footer, .agent-block")) return;
 
           if (hasRunningCommand()) {
             activeTerminalHandle?.focus();
@@ -748,7 +775,14 @@ export function TerminalPane(props: TerminalPaneProps) {
         <Show when={visibleAgentTasks().length > 0}>
           <div class="agent-blocks-layer">
             {visibleAgentTasks().map((task) => (
-              <AgentBlock key={task.id} task={task} onUndo={handleUndoAgentTask} />
+              <AgentBlock
+                key={task.id}
+                task={task}
+                onUndo={handleUndoAgentTask}
+                onRunCommand={handleRunAgentCommand}
+                onRefine={handleRefineAgentTask}
+                onCancel={handleCancelAgentTask}
+              />
             ))}
           </div>
         </Show>
@@ -780,13 +814,28 @@ export function TerminalPane(props: TerminalPaneProps) {
               <span>agent active</span>       
             </span>
           </Show>
+          <label class="agent-model-select" title="Agent model">
+            <Hexagon size={12} />
+            <select
+              value={selectedAgentModel()}
+              onChange={(event) => setSelectedAgentModel(props.sessionId, event.currentTarget.value)}
+            >
+              {agentModels().map((model) => (
+                <option value={model}>{model}</option>
+              ))}
+            </select>
+          </label>
         </div>
         <div
           class="input-container"
           onMouseDown={(event) => event.stopPropagation()}
         >
           <div class="command-input-shell">
-            <Show when={ghostCmd.ghostCommand() && !inputValue().trim()}>
+          <Show when={inputValue().startsWith('/')}>
+             <div class="command-icon">✨</div>
+          </Show>
+          <Show when={ghostCmd.ghostCommand() && !inputValue().trim()}>
+
               <div class="command-ghost command-ghost-ai" aria-hidden="true">
                 <span class="command-ghost-typed">{inputValue()}</span>
                 <span class="command-ghost-completion">{ghostCmd.ghostCommand()}</span>

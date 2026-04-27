@@ -180,6 +180,39 @@
   margin-left: auto;
 }
 
+.agent-model-select {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  background: rgba(59, 130, 246, 0.08);
+  color: #93c5fd;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.status-hint-agent + .agent-model-select {
+  margin-left: 0;
+}
+
+.agent-model-select select {
+  max-width: 180px;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.agent-model-select option {
+  color: #111827;
+}
+
 .input-container {
   padding: 6px 18px 4px 18px;
   position: relative;
@@ -210,6 +243,15 @@
   border: none;
   border-radius: 0;
   transition: none;
+  display: flex;
+  align-items: center;
+}
+
+.command-icon {
+  margin-right: 8px;
+  font-size: 14px;
+  pointer-events: none;
+  opacity: 0.7;
 }
 
 .command-input-shell:focus-within {

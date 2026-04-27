@@ -1,107 +1,183 @@
 /* @solid */
 import {
   AlertTriangle,
-  Brain,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
-  FilePenLine,
-  FileSearch,
+  CircleStop,
+  Play,
   RotateCcw,
   ShieldAlert,
-  TerminalSquare,
+  Sparkles,
+  Send,
   X,
 } from "lucide-solid";
-import { Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { useTerminalContext } from "../../context/TerminalContext";
 import type { AgentTask, AgentTaskStep } from "../../types";
 import { DiffViewer } from "./DiffViewer";
 import "./AgentBlock.css";
 
-function statusLabel(task: AgentTask): string {
-  switch (task.status) {
-    case "running": return "Running";
-    case "completed": return "Complete";
-    case "error": return "Failed";
-    case "reverted": return "Reverted";
-    default: return task.status;
-  }
-}
-
-function stepIcon(step: AgentTaskStep) {
-  switch (step.kind) {
-    case "read_file":
-      return <FileSearch size={13} />;
-    case "write_file":
-      return <FilePenLine size={13} />;
-    case "execute_command":
-      return <TerminalSquare size={13} />;
-    default:
-      return <Brain size={13} />;
-  }
-}
-
 interface AgentBlockProps {
   task: AgentTask;
   onUndo: (taskId: string) => void;
+  onRunCommand: (command: string) => void;
+  onRefine: (task: AgentTask, feedback: string) => void;
+  onCancel: (taskId: string) => void;
 }
 
-export function AgentBlock({ task, onUndo }: AgentBlockProps) {
-  const { pendingConfirmation, respondConfirmation } = useTerminalContext();
-  const recentSteps = [...task.steps].slice(-4).reverse();
-  const latestStep = recentSteps[0];
-  const [responded, setResponded] = createSignal(false);
-  const [expandedFiles, setExpandedFiles] = createSignal<Set<string>>(new Set());
+function commandFromStep(step: AgentTaskStep): string | null {
+  if (step.kind !== "execute_command" || !step.detail) return null;
+  const [command] = step.detail.split(": ");
+  return command.trim() || null;
+}
 
-  function toggleFileExpand(path: string) {
-    setExpandedFiles((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path); else next.add(path);
-      return next;
+function reasoningText(task: AgentTask): string {
+  const lines = task.steps
+    .filter((step) => step.kind === "thinking" || step.kind === "read_file" || step.kind === "write_file")
+    .map((step) => {
+      const detail = step.detail ? ` - ${step.detail}` : "";
+      return `- ${step.label}${detail}`;
     });
-  }
 
-  // Find the confirmation step (awaiting_confirmation status)
-  const confirmStep = () => task.steps.find((s) => s.status === "awaiting_confirmation");
+  if (task.summary) lines.push(`- ${task.summary}`);
+  return lines.join("\n") || "No reasoning details yet.";
+}
+
+function MarkdownLite(props: { text: string }) {
+  const lines = () => props.text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+
+  return (
+    <div class="agent-markdown">
+      <For each={lines()}>
+        {(line) => (
+          <Show
+            when={line.trim().startsWith("- ")}
+            fallback={<p>{line}</p>}
+          >
+            <p class="agent-markdown-list">{line.trim().slice(2)}</p>
+          </Show>
+        )}
+      </For>
+    </div>
+  );
+}
+
+export function AgentBlock(props: AgentBlockProps) {
+  const { state, respondConfirmation } = useTerminalContext();
+  const [responded, setResponded] = createSignal(false);
+  const [reasoningOpen, setReasoningOpen] = createSignal(false);
+  const [refining, setRefining] = createSignal(false);
+  const [feedback, setFeedback] = createSignal("");
+
+  const confirmStep = () => props.task.steps.find((s) => s.status === "awaiting_confirmation");
   const confirmation = () => {
     if (!confirmStep()) return undefined;
-    // Try to match by taskId pattern: confirm-{taskId}-{timestamp}
-    for (const [key, value] of Object.entries(pendingConfirmation ?? {})) {
-      if (key.startsWith(`confirm-${task.id}`)) return value;
+    for (const confirmation of state().pendingConfirmations.values()) {
+      if (confirmation.taskId.startsWith(`confirm-${props.task.id}-`)) {
+        return confirmation;
+      }
     }
     return undefined;
   };
 
+  const commandActions = createMemo(() =>
+    props.task.steps
+      .map((step) => ({ step, command: commandFromStep(step) }))
+      .filter((item): item is { step: AgentTaskStep; command: string } => Boolean(item.command))
+  );
+
+  const canApprove = () => commandActions().length > 0;
+
   async function handleRespond(allowed: boolean) {
     setResponded(true);
     const conf = confirmation();
-    if (conf) {
-      await respondConfirmation(conf.taskId, allowed);
+    if (conf) await respondConfirmation(conf.taskId, allowed);
+  }
+
+  function handleApprove() {
+    for (const action of commandActions()) {
+      props.onRunCommand(action.command);
     }
   }
 
+  function handleRefineSubmit() {
+    const value = feedback().trim();
+    if (!value) return;
+    props.onRefine(props.task, value);
+    setFeedback("");
+    setRefining(false);
+  }
+
   return (
-    <article
-      class={`agent-block agent-block-${task.status}`}
-    >
-      <div class="agent-block-header">
+    <article class={`agent-block agent-block-${props.task.status}`}>
+      <header class="agent-block-header">
         <div class="agent-block-title">
-          <span
-            class={`agent-block-dot ${task.status === "running" ? "is-live" : ""}`}
-          />
-          <span>Velocity Agent</span>
+          <Sparkles size={14} />
+          <span>Agent</span>
         </div>
-        <span class={`agent-block-status agent-block-status-${task.status}`}>
-          {statusLabel(task)}
-        </span>
-      </div>
+        <span class="agent-block-status">{props.task.status}</span>
+      </header>
 
-      <p class="agent-block-prompt">{task.prompt}</p>
+      <p class="agent-block-prompt">{props.task.prompt}</p>
 
-      {/* Confirmation Card */}
+      <section class={`agent-reasoning ${reasoningOpen() ? "is-open" : ""}`}>
+        <button
+          type="button"
+          class="agent-section-toggle"
+          onClick={() => setReasoningOpen(!reasoningOpen())}
+        >
+          {reasoningOpen() ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span>Reasoning</span>
+        </button>
+        <div class="agent-reasoning-panel">
+          <MarkdownLite text={reasoningText(props.task)} />
+        </div>
+      </section>
+
+      <Show when={commandActions().length > 0}>
+        <section class="agent-section">
+          <div class="agent-section-heading">Proposed Actions</div>
+          <div class="agent-command-grid">
+            <For each={commandActions()}>
+              {(action) => (
+                <div class="agent-command-card">
+                  <code>{action.command}</code>
+                  <button
+                    type="button"
+                    class="agent-card-run"
+                    onClick={() => props.onRunCommand(action.command)}
+                    title="Run command"
+                  >
+                    <Play size={13} />
+                    <span>Run</span>
+                  </button>
+                </div>
+              )}
+            </For>
+          </div>
+        </section>
+      </Show>
+
+      <Show when={props.task.changes.some((change) => change.diff)}>
+        <section class="agent-section">
+          <div class="agent-section-heading">File Diffs</div>
+          <For each={props.task.changes.filter((change) => change.diff)}>
+            {(change) => (
+              <DiffViewer
+                title={change.path}
+                diff={change.diff!}
+                reverted={change.reverted}
+              />
+            )}
+          </For>
+        </section>
+      </Show>
+
       <Show when={confirmStep() && !responded()}>
         <div class="agent-confirmation-card">
           <div class="agent-confirmation-header">
-            <ShieldAlert size={16} />
+            <ShieldAlert size={14} />
             <span>Confirmation Required</span>
           </div>
           <Show when={confirmation()}>
@@ -113,113 +189,64 @@ export function AgentBlock({ task, onUndo }: AgentBlockProps) {
             )}
           </Show>
           <div class="agent-confirmation-actions">
-            <button
-              type="button"
-              class="agent-confirm-deny"
-              onClick={() => handleRespond(false)}
-            >
-              <X size={14} />
+            <button type="button" class="agent-confirm-deny" onClick={() => handleRespond(false)}>
+              <X size={13} />
               <span>Deny</span>
             </button>
-            <button
-              type="button"
-              class="agent-confirm-allow"
-              onClick={() => handleRespond(true)}
-            >
-              <CheckCircle2 size={14} />
+            <button type="button" class="agent-confirm-allow" onClick={() => handleRespond(true)}>
+              <CheckCircle2 size={13} />
               <span>Allow</span>
             </button>
           </div>
         </div>
       </Show>
 
-      <Show when={!!(task.summary || task.error)}>
+      <Show when={!!(props.task.summary || props.task.error)}>
+        <div class={`agent-block-output ${props.task.error ? "has-error" : ""}`}>
+          {props.task.error ? <AlertTriangle size={13} /> : <CheckCircle2 size={13} />}
+          <span>{props.task.error ?? props.task.summary}</span>
+        </div>
+      </Show>
+
+      <Show when={refining()}>
         <div
-          class={`agent-block-summary ${task.error ? "has-error" : ""}`}
+          class="agent-refine-box"
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
         >
-          {task.error ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
-          <span>{task.error ?? task.summary}</span>
+          <textarea
+            value={feedback()}
+            onInput={(event) => setFeedback(event.currentTarget.value)}
+            placeholder="Tell the agent what to change..."
+            rows={3}
+          />
+          <button type="button" onClick={handleRefineSubmit} title="Send feedback">
+            <Send size={13} />
+            <span>Send</span>
+          </button>
         </div>
       </Show>
 
-      <Show when={!!latestStep && (!confirmStep() || responded())}>
-        <div class="agent-block-current-step">
-          <span class="agent-block-section-label">Current</span>
-          <div class="agent-step-row is-current">
-            <span class="agent-step-icon">{stepIcon(latestStep)}</span>
-            <div class="agent-step-copy">
-              <span class="agent-step-label">{latestStep.label}</span>
-              <Show when={!!latestStep.detail}>
-                <span class="agent-step-detail">{latestStep.detail}</span>
-              </Show>
-            </div>
-          </div>
-        </div>
-      </Show>
-
-      <Show when={recentSteps.length > 1}>
-        <div class="agent-block-history">
-          <span class="agent-block-section-label">Recent steps</span>
-          <div class="agent-step-list">
-            {recentSteps.slice(1).map((step) => (
-              <div key={step.id} class="agent-step-row">
-                <span class="agent-step-icon">{stepIcon(step)}</span>
-                <div class="agent-step-copy">
-                  <span class="agent-step-label">{step.label}</span>
-                  <Show when={!!step.detail}>
-                    <span class="agent-step-detail">{step.detail}</span>
-                  </Show>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Show>
-
-      <Show when={task.changes.length > 0}>
-        <div class="agent-block-files">
-          <span class="agent-block-section-label">Changed files</span>
-          <div class="agent-file-list">
-            {task.changes.map((change) => {
-              const isExpanded = () => expandedFiles().has(change.path);
-              return (
-                <div key={change.path} class="agent-file-row-expandable">
-                  <button
-                    type="button"
-                    class="agent-file-toggle"
-                    onClick={() => toggleFileExpand(change.path)}
-                  >
-                    {isExpanded() ? <ChevronRight size={12} style={{ transform: "rotate(90deg)" }} /> : <ChevronRight size={12} />}
-                    <div class="agent-file-copy">
-                      <span class="agent-file-path">{change.path}</span>
-                      <span class="agent-file-summary">{change.summary}</span>
-                    </div>
-                    <div class="agent-file-stats">
-                      <span class="agent-file-added">+{change.addedLines}</span>
-                      <span class="agent-file-removed">-{change.removedLines}</span>
-                    </div>
-                  </button>
-                  <Show when={isExpanded() && change.diff}>
-                    <DiffViewer diff={change.diff!} />
-                  </Show>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </Show>
-
-      <div class="agent-block-actions">
-        <button
-          type="button"
-          class="agent-undo-btn"
-          onClick={() => onUndo(task.id)}
-          disabled={!task.canUndo}
-        >
-          <RotateCcw size={13} />
-          <span>Undo changes</span>
+      <footer class="agent-control-panel">
+        <button type="button" class="agent-control-approve" disabled={!canApprove()} onClick={handleApprove}>
+          <CheckCircle2 size={13} />
+          <span>Approve</span>
         </button>
-      </div>
+        <button type="button" onClick={() => setRefining(!refining())}>
+          <Sparkles size={13} />
+          <span>Refine</span>
+        </button>
+        <button type="button" onClick={() => props.onCancel(props.task.id)} disabled={props.task.status !== "running"}>
+          <CircleStop size={13} />
+          <span>Cancel</span>
+        </button>
+        <Show when={props.task.canUndo}>
+          <button type="button" onClick={() => props.onUndo(props.task.id)}>
+            <RotateCcw size={12} />
+            <span>Undo</span>
+          </button>
+        </Show>
+      </footer>
     </article>
   );
 }

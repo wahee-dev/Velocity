@@ -51,7 +51,7 @@ export interface TerminalInputIntent {
   reason: string;
 }
 
-export type AgentTaskStatus = 'running' | 'completed' | 'error' | 'reverted';
+export type AgentTaskStatus = 'running' | 'completed' | 'error' | 'reverted' | 'cancelled';
 export type AgentStepKind = 'thinking' | 'read_file' | 'write_file' | 'execute_command' | 'complete' | 'revert';
 export type AgentStepStatus = 'running' | 'completed' | 'error' | 'awaiting_confirmation';
 export type AgentFileChangeKind = 'created' | 'modified';
@@ -247,6 +247,7 @@ export interface TerminalSession {
   blocks: CommandBlock[];
   agentTasks: AgentTask[];
   inputValue: string;
+  selectedAgentModel: string;
   showWelcome: boolean;
   isActive: boolean;
   gitStatus: GitStatus;
